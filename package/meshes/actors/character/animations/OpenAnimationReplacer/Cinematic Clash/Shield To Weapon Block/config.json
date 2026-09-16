@@ -1,0 +1,12 @@
+{
+    "name": "Shield To Weapon Block",
+    "description": "While an actor is locked in a Cinematic Clash, the shield block animations are replaced with the one-handed weapon block animations (vanilla files renamed), so a shield user blocks with their sword while the shield itself is hidden by the plugin.",
+    "priority": 2000000001,
+    "conditions": [
+        {
+            "condition": "CinematicClash_IsInClash",
+            "requiredPlugin": "CinematicClash",
+            "requiredVersion": "1.0.0"
+        }
+    ]
+}

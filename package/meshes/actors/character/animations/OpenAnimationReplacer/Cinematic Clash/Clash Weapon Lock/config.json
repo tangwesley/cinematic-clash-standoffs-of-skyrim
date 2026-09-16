@@ -1,0 +1,12 @@
+{
+    "name": "Clash Weapon Lock",
+    "description": "Template: plays while both actors are locked together in a standoff. Put replacement block animations here (for example 1hm_blockidle.hkx, 2hm_blockidle.hkx, 2hw_blockidle.hkx, 1hm_blockstart.hkx ...) to swap the calm block hold for a strained weapon lock. Without any .hkx files this folder does nothing.",
+    "priority": 2000000000,
+    "conditions": [
+        {
+            "condition": "CinematicClash_IsInClash",
+            "requiredPlugin": "CinematicClash",
+            "requiredVersion": "1.0.0"
+        }
+    ]
+}

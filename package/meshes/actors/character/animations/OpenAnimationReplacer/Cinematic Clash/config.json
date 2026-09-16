@@ -1,0 +1,5 @@
+{
+    "name": "Cinematic Clash",
+    "author": "Wesley",
+    "description": "Optional animation replacements for Cinematic Clash standoffs. Each sub-folder is a template: drop replacement .hkx files (matching vanilla file names) next to its config.json and they will be used only while its clash condition is true."
+}

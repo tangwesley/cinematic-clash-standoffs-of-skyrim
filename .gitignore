@@ -1,0 +1,7 @@
+build/
+install/
+.vs/
+out/
+vcpkg_installed/
+package/SKSE/Plugins/*.dll
+package/SKSE/Plugins/*.pdb

@@ -1,0 +1,15 @@
+Cinematic Clash is licensed under the GNU General Public License, version 3 or
+(at your option) any later version. The full text of the GPL-3.0 is included in
+include/MaxsuWeaponParry/COPYING.
+
+Third-party code bundled with this project:
+
+- include/MaxsuWeaponParry/  -  from doodlum/MaxsuWeaponSwingParry-ng (GPL-3.0).
+  WeaponParry_Functions.h/.cpp are unchanged apart from removing a FMT_STRING()
+  wrapper around the log format strings.
+- include/OAR/                -  Open Animation Replacer modder API from
+  ersh1/OpenAnimationReplacer, copied verbatim (its headers are provided for
+  exactly this purpose).
+- include/PrecisionAPI.h      -  Precision modder API, copied verbatim.
+- include/SmoothCamAPI.h      -  SmoothCam modder API, copied verbatim.
+- extern/CommonLibSSE-NG/     -  alandtse/CommonLibSSE-NG v8.0.1 (GPL-3.0-or-later).

@@ -1,0 +1,12 @@
+{
+    "name": "Clash Defeat",
+    "description": "Template: plays for whoever lost the standoff during the outcome window (default 1 second). Put a replacement for the large stagger here (for example staggerbackwardlarge.hkx) to give the loser a dramatic knock-back. Without any .hkx files this folder does nothing.",
+    "priority": 2000000000,
+    "conditions": [
+        {
+            "condition": "CinematicClash_IsClashLoser",
+            "requiredPlugin": "CinematicClash",
+            "requiredVersion": "1.0.0"
+        }
+    ]
+}
