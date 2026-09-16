@@ -1,3 +1,4 @@
+#include "BossRecognition.h"
 #include "ClashCamera.h"
 #include "ClashController.h"
 #include "ClashDetection.h"
@@ -119,6 +120,8 @@ namespace
 			ClashHUD::GetSingleton()->Install();
 			// Menu events: rumble is cut when a menu pauses the game.
 			ClashRumble::GetSingleton()->Register();
+			// Forms exist now: resolve the boss recognition lists for bBossesOnly.
+			BossRecognition::GetSingleton()->Load();
 			break;
 
 		case SKSE::MessagingInterface::kNewGame:

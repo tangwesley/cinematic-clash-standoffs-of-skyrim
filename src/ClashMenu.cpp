@@ -1,5 +1,6 @@
 #include "ClashMenu.h"
 
+#include "BossRecognition.h"
 #include "ClashHUD.h"
 #include "Settings.h"
 
@@ -223,6 +224,7 @@ namespace
 	{
 		if (a_pending.reloadFromDisk) {
 			a_settings.Load();
+			BossRecognition::GetSingleton()->Load();
 			ClashHUD::GetSingleton()->ReloadAssets();
 		}
 		if (a_pending.resetSection) {
@@ -284,7 +286,7 @@ namespace
 		if (UI::Button("Reload from disk")) {
 			pending.reloadFromDisk = true;
 		}
-		Help("Re-reads both INI files now.");
+		Help("Re-reads both INI files and the boss recognition lists now.");
 
 		UI::PopID();
 		Apply(settings, section, pending);

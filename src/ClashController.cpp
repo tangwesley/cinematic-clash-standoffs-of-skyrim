@@ -1,5 +1,6 @@
 #include "ClashController.h"
 
+#include "BossRecognition.h"
 #include "ClashAudio.h"
 #include "ClashCamera.h"
 #include "ClashDetection.h"
@@ -240,6 +241,10 @@ bool ClashController::OnClashDetected(RE::Actor* a_attacker, RE::Actor* a_target
 	}
 	if (settings->requireHostile && !settings->forceClashOnHit && !npc->IsHostileToActor(player)) {
 		logger::debug("Clash rejected: {} is not hostile", npc->GetName());
+		return false;
+	}
+	if (settings->bossesOnly && !settings->forceClashOnHit && !BossRecognition::GetSingleton()->IsBoss(npc)) {
+		logger::debug("Clash rejected: {} is not a boss", npc->GetName());
 		return false;
 	}
 	if (player->IsOnMount() || npc->IsOnMount()) {

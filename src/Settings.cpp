@@ -29,6 +29,7 @@ namespace
 		{ "General", "fTriggerChance", &SD::triggerChance, 0, 100, "Trigger chance (%)", "Percent chance that a detected weapon clash turns into a cinematic standoff." },
 		{ "General", "fCooldownSeconds", &SD::cooldownSeconds, 0, kInf, "Cooldown (s)", "Minimum seconds between two standoffs." },
 		{ "General", "bRequireHostile", &SD::requireHostile, 0, 1, "Require hostile", "Only clash with NPCs that are hostile to the player." },
+		{ "General", "bBossesOnly", &SD::bossesOnly, 0, 1, "Bosses only", "Only clash with opponents recognised as a boss: the races, NPCs and location boss markers listed in SKSE/Plugins/CinematicClash/BossRecognition/*.ini, plus TrueHUD's own lists when it is installed. TrueHUD is not required." },
 		{ "General", "fMaxStartDistance", &SD::maxStartDistance, 0, kInf, "Max start distance", "A standoff will not start if the two actors are further apart than this (units)." },
 
 		// [Standoff]
@@ -121,7 +122,7 @@ namespace
 
 		// [Debug]
 		{ "Debug", "bDebugLog", &SD::debugLog, 0, 1, "Debug log", "Verbose logging to Documents\\My Games\\Skyrim Special Edition\\SKSE\\CinematicClash.log" },
-		{ "Debug", "bForceClashOnHit", &SD::forceClashOnHit, 0, 1, "Force clash on hit", "Testing aid: every melee hit the player lands on a humanoid NPC starts a clash, skipping the weapon-parry check, hostility and chance. Cooldown still applies. Leave off for normal play." },
+		{ "Debug", "bForceClashOnHit", &SD::forceClashOnHit, 0, 1, "Force clash on hit", "Testing aid: every melee hit the player lands on a humanoid NPC starts a clash, skipping the weapon-parry check, hostility, bosses-only and chance. Cooldown still applies. Leave off for normal play." },
 	};
 
 	const Settings::FramingEntry kFramingEntries[] = {

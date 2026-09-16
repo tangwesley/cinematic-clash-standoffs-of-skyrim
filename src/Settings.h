@@ -14,6 +14,7 @@ struct SettingsData
 	float triggerChance{ 100.0f };       // percent, per detected weapon clash
 	float cooldownSeconds{ 8.0f };       // minimum time between two clashes
 	bool  requireHostile{ true };        // NPC must be hostile to the player
+	bool  bossesOnly{ false };         // only opponents the BossRecognition lists class as a boss
 	float maxStartDistance{ 260.0f };    // clash cannot start if the pair is further apart
 
 	// --- [Standoff] --------------------------------------------------------
@@ -165,8 +166,8 @@ struct SettingsData
 	// --- [Debug] -----------------------------------------------------------
 	bool debugLog{ false };
 	// Testing aid: every melee hit the player lands on a humanoid NPC starts a
-	// clash, skipping the parry check, the hostility requirement and the
-	// chance roll. Cooldown still applies.
+	// clash, skipping the parry check, the hostility and bosses-only
+	// requirements and the chance roll. Cooldown still applies.
 	bool forceClashOnHit{ false };
 };
 
