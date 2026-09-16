@@ -19,7 +19,7 @@ stops for a cinematic standoff:
 
 | Requirement | Notes |
 | --- | --- |
-| SKSE64 | Any runtime supported by CommonLibSSE-NG (1.5.97, 1.6.x). VR loads but the clash camera is disabled. |
+| SKSE64 | Any runtime supported by CommonLibSSE-NG (1.5.97, 1.6.x, 1.7.x). VR loads but the clash camera is disabled. |
 | Address Library for SKSE Plugins | |
 | Simple Weapon Swing Parry (MaxsuWeaponSwingParry-ng) | Recommended. Its `ShouldParry` check is what decides that two swings clashed; that code is vendored here so the plugin also works without it installed, but with it installed both mods share one detection. |
 | Precision | Optional. When present, hits are read from Precision's pre-hit callback instead of the vanilla hit path. |
