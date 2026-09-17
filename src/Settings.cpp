@@ -29,6 +29,7 @@ namespace
 		{ "General", "fTriggerChance", &SD::triggerChance, 0, 100, "Trigger chance (%)", "Percent chance that a detected weapon clash turns into a cinematic standoff." },
 		{ "General", "fCooldownSeconds", &SD::cooldownSeconds, 0, kInf, "Cooldown (s)", "Minimum seconds between two standoffs." },
 		{ "General", "bRequireHostile", &SD::requireHostile, 0, 1, "Require hostile", "Only clash with NPCs that are hostile to the player." },
+		{ "General", "bBossesOnly", &SD::bossesOnly, 0, 1, "Bosses only", "Only clash with opponents recognised as a boss: the races, NPCs and location boss markers listed in SKSE/Plugins/CinematicClash/BossRecognition/*.ini, plus TrueHUD's own lists when it is installed. TrueHUD is not required." },
 		{ "General", "fMaxStartDistance", &SD::maxStartDistance, 0, kInf, "Max start distance", "A standoff will not start if the two actors are further apart than this (units)." },
 
 		// [Standoff]
@@ -68,7 +69,8 @@ namespace
 		// [Camera]
 		{ "Camera", "bEnabled", &SD::cameraEnabled, 0, 1, "Enabled", "Move the camera behind the player's shoulder for the standoff." },
 		{ "Camera", "", std::monostate{}, 0, 0, "Framing", "The shot: the keys every camera preset can override." },
-		{ "Camera", "bRestoreFirstPerson", &SD::restoreFirstPerson, 0, 1, "Restore first person", "If the clash started in first person, go back to first person afterwards." },
+		{ "Camera", "bForceThirdPerson", &SD::forceThirdPerson, 0, 1, "Force third person", "When a clash starts in first person, switch to third person for the shoulder shot. Off: stay in first person for the whole standoff (the block is held and movement locked as usual, and no camera shot is applied)." },
+		{ "Camera", "bRestoreFirstPerson", &SD::restoreFirstPerson, 0, 1, "Restore first person", "If the clash started in first person and was forced to third person, go back to first person afterwards." },
 		{ "Camera", "fFirstPersonRestoreDelay", &SD::firstPersonRestoreDelay, 0, kInf, "First person restore delay (s)", "Seconds after the clash before first person is restored." },
 		{ "Camera", "sPreset", &SD::cameraPresetList, 0, 0, "Preset pool", "Comma-separated preset names from CinematicClash_CameraPresets.ini. Every clash picks one at random; a preset whose camera position is walled off is skipped, and when every one is the first listed is used. One name = always that shot. Empty = the keys above as written. The list below edits this." },
 		{ "Camera", "fWallMargin", &SD::cameraWallMargin, 0, kInf, "Wall margin", "Clearance a shot needs: a ray from the point where the weapons meet to the camera, extended by this many units, must not hit anything but the two fighters. 0 = never check." },
@@ -121,7 +123,7 @@ namespace
 
 		// [Debug]
 		{ "Debug", "bDebugLog", &SD::debugLog, 0, 1, "Debug log", "Verbose logging to Documents\\My Games\\Skyrim Special Edition\\SKSE\\CinematicClash.log" },
-		{ "Debug", "bForceClashOnHit", &SD::forceClashOnHit, 0, 1, "Force clash on hit", "Testing aid: every melee hit the player lands on a humanoid NPC starts a clash, skipping the weapon-parry check, hostility and chance. Cooldown still applies. Leave off for normal play." },
+		{ "Debug", "bForceClashOnHit", &SD::forceClashOnHit, 0, 1, "Force clash on hit", "Testing aid: every melee hit the player lands on a humanoid NPC starts a clash, skipping the weapon-parry check, hostility, bosses-only and chance. Cooldown still applies. Leave off for normal play." },
 	};
 
 	const Settings::FramingEntry kFramingEntries[] = {

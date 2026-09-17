@@ -14,6 +14,7 @@ struct SettingsData
 	float triggerChance{ 100.0f };       // percent, per detected weapon clash
 	float cooldownSeconds{ 8.0f };       // minimum time between two clashes
 	bool  requireHostile{ true };        // NPC must be hostile to the player
+	bool  bossesOnly{ false };         // only opponents the BossRecognition lists class as a boss
 	float maxStartDistance{ 260.0f };    // clash cannot start if the pair is further apart
 
 	// --- [Standoff] --------------------------------------------------------
@@ -103,6 +104,10 @@ struct SettingsData
 	// extended by this many units, must not hit anything but the two actors.
 	// 0 = no wall check.
 	float cameraWallMargin{ 15.0f };
+	// A clash that starts in first person: switch to third person for the
+	// shoulder shot (true), or stay in first person with the block held from
+	// the player's own eyes and no camera override at all (false).
+	bool  forceThirdPerson{ true };
 	bool  restoreFirstPerson{ true };    // switch back if the clash forced third person
 	float firstPersonRestoreDelay{ 0.75f };
 
@@ -165,8 +170,8 @@ struct SettingsData
 	// --- [Debug] -----------------------------------------------------------
 	bool debugLog{ false };
 	// Testing aid: every melee hit the player lands on a humanoid NPC starts a
-	// clash, skipping the parry check, the hostility requirement and the
-	// chance roll. Cooldown still applies.
+	// clash, skipping the parry check, the hostility and bosses-only
+	// requirements and the chance roll. Cooldown still applies.
 	bool forceClashOnHit{ false };
 };
 

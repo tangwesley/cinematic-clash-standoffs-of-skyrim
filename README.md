@@ -25,6 +25,7 @@ stops for a cinematic standoff:
 | Precision | Optional. When present, hits are read from Precision's pre-hit callback instead of the vanilla hit path. |
 | Open Animation Replacer | Optional. Enables the custom conditions below. |
 | SmoothCam | Optional. Camera control is requested through the SmoothCam API for the duration of the clash and handed back afterwards. |
+| TrueHUD | Not required. When installed, its boss recognition lists are read alongside this mod's own, so `bBossesOnly` agrees with TrueHUD's boss bars. |
 | SKSE Menu Framework 3 | Optional. Adds an in-game settings menu (every INI key, plus the camera presets) that writes back to the INI files. |
 
 ## Compatibility notes
@@ -41,6 +42,15 @@ third-person update (position and aim, the same way SmoothCam does) and zeroes t
 free-rotation offsets so the engine has no reason to turn the blocking player toward the
 camera. When the override ends, position, aim and FOV blend back to whatever the engine's
 camera is doing over `fBlendOut`.
+
+**First person.** A clash that starts in first person switches to third person for the
+shoulder shot and, with `bRestoreFirstPerson`, switches back afterwards. With
+`[Camera] bForceThirdPerson = 0` the camera stays in first person instead: the player is put
+into the block and held there, movement and looking are locked, and the standoff plays from
+their own eyes with no camera shot, SmoothCam request or FOV change. The view is eased level
+over `fSettleTime` so the opponent's face is dead ahead, and a hidden shield (`iShieldMode`)
+is hidden on the first-person model too. The same applies when the clash camera is disabled
+outright. Not on VR, where the headset owns the view.
 
 **Simple Weapon Swing Parry.** Both plugins hook the same melee-hit call site and chain
 through each other in either load order. When the parry mod runs first, its
@@ -80,6 +90,18 @@ block. For the duration of a clash the plugin takes TDM's yaw control through it
 (and disables its directional movement, head tracking and target lock), feeds it the held
 heading, and hands everything back at the resolve. The opponent's movement controller is
 likewise taken off AI driving for the duration so nothing turns it either.
+
+**TrueHUD.** `[General] bBossesOnly` restricts standoffs to bosses, and "boss" is decided by
+the same kind of lists TrueHUD uses for its boss bars: `[BossRecognition]` sections of `Race`,
+`NPC`, `LocRefType` and `NPCBlacklist` keys (`Plugin.esp:0xFormID`, with `Remove*` counterparts).
+The plugin reads TrueHUD's folders (`SKSE/Plugins/TrueHUD`, `SKSE/Plugins/TrueDirectionalMovement`)
+when they exist and then its own `SKSE/Plugins/CinematicClash/BossRecognition/*.ini`, base file
+first in each, so any TrueHUD boss patch carries over and this mod's files have the last word.
+TrueHUD itself is not needed: the shipped base list is a copy of TrueHUD's vanilla one. An
+actor is a boss when its race is listed, its base NPC (or the leveled template it was picked
+from) is listed, or the current location marks that reference with a listed ref type (the
+vanilla `Boss` marker), and it is not blacklisted. Lists are read at data load and by the
+menu's "Reload from disk" button.
 
 **Maxsu Block Overhaul / Dynamic Block Hit.** Both are behaviour patches that extend the
 block state machine with anticipation, hit-reaction and block-and-slash states. While two
@@ -158,6 +180,9 @@ shows up in the menu within a second. The ones you are most likely to tune:
   of them are, the first listed is used. The file ships with `LowSide`, `TightShoulder`,
   `Profile`, `LowHero` and `ReverseShoulder` and is documented inline. Both files
   hot-reload; the next clash uses the new values.
+  `bForceThirdPerson` (default on) decides what a clash that starts in first person does:
+  switch to third person for the shot, or stay in first person for the whole standoff (see
+  the first-person compatibility note above).
 - `[Sparks]` controls the shower of sparks at the contact point (interval, height, scale,
   optional model override).
 - `[Audio]` sets the lock clang, the scrape kept going during the standoff, the overpower
@@ -178,8 +203,10 @@ shows up in the menu within a second. The ones you are most likely to tune:
   `SKSE/Plugins/CinematicClash/HUD/README.txt` gives the sizes. The skin reloads whenever
   the INI is saved.
 - `[General] fTriggerChance`, `fCooldownSeconds` control how often standoffs happen.
+  `bBossesOnly` limits standoffs to opponents the boss recognition lists class as bosses (see
+  the TrueHUD compatibility note above for the format and folders).
 - `[Debug] bForceClashOnHit` starts a clash on every melee hit the player lands on a
-  humanoid NPC, ignoring the parry check, hostility and chance. For testing only.
+  humanoid NPC, ignoring the parry check, hostility, bosses-only and chance. For testing only.
 
 The INI is re-read whenever the file changes on disk, so every value can be tuned while
 the game is running; the next clash uses the new values.
@@ -212,10 +239,12 @@ CommonLib once and later builds are incremental.
 | `src/ClashInput.*` | Reads attack presses (and the held state, for hold-to-mash) from the raw input stream during the standoff; filters every other button out of `MenuControls` and `PlayerControls` while the player is locked. |
 | `src/ClashRumble.*` | Controller rumble through XInput: a held level for the standoff, pulses per press, cut while a menu pauses the game. |
 | `src/ClashHUD.*` | Tug-of-war meter drawn with Dear ImGui from an `IDXGISwapChain::Present` hook. |
+| `src/ClashTDM.*` | True Directional Movement API handshake: yaw control, directional movement, head tracking and target lock for the duration of a clash. |
+| `src/BossRecognition.*` | Boss classification for `bBossesOnly` from `[BossRecognition]` INI lists (TrueHUD's format and folders, plus this mod's own). |
 | `src/OARConditions.*` | Custom Open Animation Replacer conditions. |
 | `include/MaxsuWeaponParry/` | `ParryCheck` from MaxsuWeaponSwingParry-ng, unchanged apart from dropping a `FMT_STRING` wrapper. |
 | `include/OAR/` | Open Animation Replacer modder API, copied verbatim. |
-| `include/PrecisionAPI.h`, `include/SmoothCamAPI.h` | Third-party plugin APIs, copied verbatim. |
+| `include/PrecisionAPI.h`, `include/SmoothCamAPI.h`, `include/TrueDirectionalMovementAPI.h` | Third-party plugin APIs, copied verbatim. |
 
 ## License
 

@@ -11,8 +11,11 @@
 //                 whatever they were playing (vanilla, MCO or BFCO attacks,
 //                 recoils, staggers) is cut and they are put straight into
 //                 their block stance in the same graph update. The camera
-//                 blends in behind the player's shoulder (ClashCamera). Player
-//                 controls and the NPC's AI are disabled for the duration.
+//                 blends in behind the player's shoulder (ClashCamera), or,
+//                 for a clash that starts in first person with
+//                 bForceThirdPerson off, stays in first person while the
+//                 player's pitch is eased level. Player controls and the
+//                 NPC's AI are disabled for the duration.
 //                 The player is made a ghost (hits and hostile magic pass
 //                 through them) from the lock until the resolve.
 //   kStandoff  -> the quick time event. Attack presses (ClashInput) push the
@@ -356,4 +359,12 @@ private:
 	void SendEvent(RE::Actor* a_actor, const char* a_event);
 	bool          _timeScaled{ false };
 	bool          _forcedThirdPerson{ false };
+
+	// First-person standoff: the clash runs with the camera still in first
+	// person (bForceThirdPerson off, or the clash camera disabled). The block
+	// and the lock are the same; on top, the first-person model's shield is
+	// hidden with the third-person one and the player's pitch is eased level
+	// over the settle window so they look at the opponent, not the floor.
+	bool  _firstPersonClash{ false };
+	float _playerStartPitch{ 0.0f };
 };

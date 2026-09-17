@@ -135,6 +135,12 @@ bool ClashCamera::Begin()
 
 	bool forcedThirdPerson = false;
 	if (camera->IsInFirstPerson()) {
+		if (!settings->forceThirdPerson) {
+			// Stay in first person: no shoulder shot, no SmoothCam request, no
+			// FOV change.
+			logger::info("cam: clash starts in first person and bForceThirdPerson is off; staying in first person");
+			return false;
+		}
 		forcedThirdPerson = camera->ForceThirdPerson() && settings->restoreFirstPerson;
 	}
 
