@@ -43,6 +43,15 @@ free-rotation offsets so the engine has no reason to turn the blocking player to
 camera. When the override ends, position, aim and FOV blend back to whatever the engine's
 camera is doing over `fBlendOut`.
 
+**First person.** A clash that starts in first person switches to third person for the
+shoulder shot and, with `bRestoreFirstPerson`, switches back afterwards. With
+`[Camera] bForceThirdPerson = 0` the camera stays in first person instead: the player is put
+into the block and held there, movement and looking are locked, and the standoff plays from
+their own eyes with no camera shot, SmoothCam request or FOV change. The view is eased level
+over `fSettleTime` so the opponent's face is dead ahead, and a hidden shield (`iShieldMode`)
+is hidden on the first-person model too. The same applies when the clash camera is disabled
+outright. Not on VR, where the headset owns the view.
+
 **Simple Weapon Swing Parry.** Both plugins hook the same melee-hit call site and chain
 through each other in either load order. When the parry mod runs first, its
 `bMaxsuWeaponParry_InWeaponParry` graph variable is honoured; otherwise the vendored check
@@ -171,6 +180,9 @@ shows up in the menu within a second. The ones you are most likely to tune:
   of them are, the first listed is used. The file ships with `LowSide`, `TightShoulder`,
   `Profile`, `LowHero` and `ReverseShoulder` and is documented inline. Both files
   hot-reload; the next clash uses the new values.
+  `bForceThirdPerson` (default on) decides what a clash that starts in first person does:
+  switch to third person for the shot, or stay in first person for the whole standoff (see
+  the first-person compatibility note above).
 - `[Sparks]` controls the shower of sparks at the contact point (interval, height, scale,
   optional model override).
 - `[Audio]` sets the lock clang, the scrape kept going during the standoff, the overpower

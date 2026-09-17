@@ -483,7 +483,10 @@ void ClashController::BeginClash()
 	_npcHolder = static_cast<RE::IAnimationGraphManagerHolder*>(npc);
 
 	// Snap both facings now rather than easing into them, and take shields out
-	// of the picture before the block animation is chosen.
+	// of the picture before the block animation is chosen. The pitch is only
+	// touched by a first-person standoff, and eased rather than snapped.
+	_playerStartPitch = player->GetAngleX();
+	_firstPersonClash = false;
 	FaceEachOther(player, npc);
 	HideShield(player, _playerShieldHidden);
 	HideShield(npc, _npcShieldHidden);
@@ -497,6 +500,12 @@ void ClashController::BeginClash()
 	_blockSent = true;
 
 	_forcedThirdPerson = ClashCamera::GetSingleton()->Begin();
+	// Still in first person after the camera had its say (bForceThirdPerson
+	// off, or the clash camera disabled): the standoff is seen from the
+	// player's own eyes. Not on VR, where the headset owns the view.
+	if (const auto camera = RE::PlayerCamera::GetSingleton(); camera && camera->IsInFirstPerson() && !REL::Module::IsVR()) {
+		_firstPersonClash = true;
+	}
 
 	if (settings->timeMultiplier < 1.0f) {
 		if (const auto timer = RE::BSTimer::GetSingleton()) {
@@ -530,9 +539,10 @@ void ClashController::BeginClash()
 		ClashRumble::GetSingleton()->SetBase(settings->rumbleLargeMotor, settings->rumbleSmallMotor);
 	}
 
-	logger::info("Clash started against {} ({:08X}); difficulty {} ({:.1f} presses/s), skill {:.0f} vs {:.0f}, push {:.3f}/s{}",
+	logger::info("Clash started against {} ({:08X}); difficulty {} ({:.1f} presses/s), skill {:.0f} vs {:.0f}, push {:.3f}/s{}{}",
 		npc->GetName(), npc->GetFormID(), settings->difficultyMode, settings->PressesPerSecond(),
-		_playerSkill, _npcSkill, NpcPushRate(player, npc), settings->holdToMash ? ", hold-to-mash" : "");
+		_playerSkill, _npcSkill, NpcPushRate(player, npc), settings->holdToMash ? ", hold-to-mash" : "",
+		_firstPersonClash ? ", in first person" : "");
 }
 
 // The opponent's skill is too far behind for a struggle: the clash resolves
@@ -819,6 +829,7 @@ void ClashController::ReturnToIdle()
 	_npcID = 0;
 	_playerHolder = nullptr;
 	_npcHolder = nullptr;
+	_firstPersonClash = false;
 }
 
 void ClashController::Abort(std::string_view a_reason)
@@ -945,6 +956,18 @@ void ClashController::FaceEachOther(RE::Actor* a_player, RE::Actor* a_npc)
 
 		LockUpperBody(a_player);
 		LockUpperBody(a_npc);
+	}
+
+	// Seen from the player's own eyes, the view is whatever pitch the swing
+	// was made at, which can be the floor or the sky. Ease it level over the
+	// settle window (the opponent's face is dead ahead at clash distance) and
+	// hold it there; looking is off, so nothing else moves it. The
+	// first-person camera reads the pitch from the actor, and so does the
+	// first-person torso bend, so the block pose settles with the view.
+	if (_firstPersonClash) {
+		const float settle = Settings::GetSingleton()->settleTime;
+		const float t = settle > 0.0f ? SmoothStep(_clashTime / settle) : 1.0f;
+		a_player->data.angle.x = _playerStartPitch * (1.0f - t);
 	}
 
 	// Sliding the actors makes the graph read movement and blend a walk into
@@ -1244,37 +1267,43 @@ namespace
 		return armor && armor->HasPartOf(RE::BGSBipedObjectForm::BipedObjectSlot::kShield);
 	}
 
-	[[nodiscard]] RE::NiAVObject* ShieldNode(RE::Actor* a_actor)
-	{
-		const auto root = a_actor->Get3D();
-		return root ? root->GetObjectByName("SHIELD") : nullptr;
-	}
-
 	// Cull and collapse the attachment node and everything under it. The
 	// engine can re-enable culling on equipment nodes, so this is re-applied
-	// every frame while hidden; the zero scale is belt and braces.
+	// every frame while hidden; the zero scale is belt and braces. The player
+	// has a second, first-person model with its own SHIELD node, so both of
+	// their skeletons are walked (for an NPC the two lookups are the same
+	// root); a clash that stays in first person shows that one.
 	void SetShieldVisible(RE::Actor* a_actor, bool a_visible, bool a_log)
 	{
-		const auto node = ShieldNode(a_actor);
-		if (!node) {
-			if (a_log) {
-				logger::warn("Shield: no SHIELD node on {}'s 3D", a_actor->GetName());
+		RE::NiAVObject* roots[] = { a_actor->Get3D(false), a_actor->Get3D(true) };
+		bool            found = false;
+		for (std::size_t i = 0; i < std::size(roots); ++i) {
+			const auto root = roots[i];
+			if (!root || (i > 0 && root == roots[0])) {
+				continue;
 			}
-			return;
-		}
-		node->SetAppCulled(!a_visible);
-		node->local.scale = a_visible ? 1.0f : 0.0f;
-		if (const auto asNode = node->AsNode()) {
-			for (auto& child : asNode->GetChildren()) {
-				if (child) {
-					child->SetAppCulled(!a_visible);
-					child->local.scale = a_visible ? 1.0f : 0.0f;
+			const auto node = root->GetObjectByName("SHIELD");
+			if (!node) {
+				continue;
+			}
+			found = true;
+			node->SetAppCulled(!a_visible);
+			node->local.scale = a_visible ? 1.0f : 0.0f;
+			if (const auto asNode = node->AsNode()) {
+				for (auto& child : asNode->GetChildren()) {
+					if (child) {
+						child->SetAppCulled(!a_visible);
+						child->local.scale = a_visible ? 1.0f : 0.0f;
+					}
 				}
 			}
+			if (a_log) {
+				logger::debug("Shield: {} on {}'s {} model ({} children)", a_visible ? "shown" : "hidden", a_actor->GetName(),
+					i == 0 ? "third-person" : "first-person", node->AsNode() ? node->AsNode()->GetChildren().size() : 0u);
+			}
 		}
-		if (a_log) {
-			logger::debug("Shield: {} on {} ({} children)", a_visible ? "shown" : "hidden", a_actor->GetName(),
-				node->AsNode() ? node->AsNode()->GetChildren().size() : 0u);
+		if (!found && a_log) {
+			logger::warn("Shield: no SHIELD node on {}'s 3D", a_actor->GetName());
 		}
 	}
 }

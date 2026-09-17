@@ -104,6 +104,10 @@ struct SettingsData
 	// extended by this many units, must not hit anything but the two actors.
 	// 0 = no wall check.
 	float cameraWallMargin{ 15.0f };
+	// A clash that starts in first person: switch to third person for the
+	// shoulder shot (true), or stay in first person with the block held from
+	// the player's own eyes and no camera override at all (false).
+	bool  forceThirdPerson{ true };
 	bool  restoreFirstPerson{ true };    // switch back if the clash forced third person
 	float firstPersonRestoreDelay{ 0.75f };
 

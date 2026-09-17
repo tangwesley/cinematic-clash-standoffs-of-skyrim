@@ -69,7 +69,8 @@ namespace
 		// [Camera]
 		{ "Camera", "bEnabled", &SD::cameraEnabled, 0, 1, "Enabled", "Move the camera behind the player's shoulder for the standoff." },
 		{ "Camera", "", std::monostate{}, 0, 0, "Framing", "The shot: the keys every camera preset can override." },
-		{ "Camera", "bRestoreFirstPerson", &SD::restoreFirstPerson, 0, 1, "Restore first person", "If the clash started in first person, go back to first person afterwards." },
+		{ "Camera", "bForceThirdPerson", &SD::forceThirdPerson, 0, 1, "Force third person", "When a clash starts in first person, switch to third person for the shoulder shot. Off: stay in first person for the whole standoff (the block is held and movement locked as usual, and no camera shot is applied)." },
+		{ "Camera", "bRestoreFirstPerson", &SD::restoreFirstPerson, 0, 1, "Restore first person", "If the clash started in first person and was forced to third person, go back to first person afterwards." },
 		{ "Camera", "fFirstPersonRestoreDelay", &SD::firstPersonRestoreDelay, 0, kInf, "First person restore delay (s)", "Seconds after the clash before first person is restored." },
 		{ "Camera", "sPreset", &SD::cameraPresetList, 0, 0, "Preset pool", "Comma-separated preset names from CinematicClash_CameraPresets.ini. Every clash picks one at random; a preset whose camera position is walled off is skipped, and when every one is the first listed is used. One name = always that shot. Empty = the keys above as written. The list below edits this." },
 		{ "Camera", "fWallMargin", &SD::cameraWallMargin, 0, kInf, "Wall margin", "Clearance a shot needs: a ray from the point where the weapons meet to the camera, extended by this many units, must not hit anything but the two fighters. 0 = never check." },
