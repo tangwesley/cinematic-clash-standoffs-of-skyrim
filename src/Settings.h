@@ -24,6 +24,27 @@ struct SettingsData
 	bool  staminaAffectsNpc{ true };     // low NPC stamina weakens its push
 	float staminaCostPerPress{ 3.0f };   // player stamina spent per press
 	float clashDistance{ 95.0f };        // distance between the two actors while locked
+	// Separation solve: both weapons measured off their meshes (BladeGeometry)
+	// once the block pose is up, and the pair stood at the distance that makes
+	// the blades touch, within the bounds below. A miss no distance closes is
+	// sideways or vertical; fClashDistance is kept.
+	bool  solveClashDistance{ true };
+	float solveDistanceMin{ 40.0f };
+	float solveDistanceMax{ 130.0f };
+	float solveBite{ 2.0f };             // units past first contact, so the blades visibly cross
+	// Height misses: the higher blade's owner is bent down to the other, half
+	// from the spine and half from the sword arm's shoulder.
+	bool  tiltToMeet{ true };
+	float tiltMaxDegrees{ 12.0f };       // most either joint may be turned
+	// Blades a block animation swings into the other fighter are turned back
+	// out, at the wrist first and then at the weapon. Maintained every frame,
+	// so it follows the animation and eases off when not needed.
+	bool  clearWeaponClipping{ true };
+	float clearanceMaxDegrees{ 20.0f };  // most either of those two may be turned
+	float clearanceBodyRadius{ 16.0f };  // torso half-width the blade is kept out of, scaled by size
+	// Take the point where the weapons meet (sparks, scrape loop, camera aim)
+	// from the measured blades rather than the midpoint at a fixed height.
+	bool  contactFromWeapons{ true };
 	float pushDistance{ 0.0f };          // how far the pair slides as the meter moves (0 = off; the slide reads as motion)
 	float approachTime{ 0.25f };         // seconds to slide the actors into position
 	float settleTime{ 0.5f };            // after this, headings freeze and spine tracking is off
@@ -155,6 +176,10 @@ struct SettingsData
 	float loserStaggerMagnitude{ 1.0f };   // 1.0 = the large stagger
 	float winnerStaggerMagnitude{ 0.0f };  // 0 = winner is not staggered
 	float drawStaggerMagnitude{ 0.25f };   // both actors when the timer runs out; small stagger
+	// What a standoff the timer ends becomes: 0 = a draw wherever the marker
+	// sits, 1 = the side the marker is nearer to wins it. A marker dead on the
+	// centre is a draw either way.
+	int   timeoutResolution{ 0 };
 	float outcomeWindow{ 1.0f };           // seconds the winner/loser OAR conditions stay true
 
 	// --- [Messages] --------------------------------------------------------

@@ -161,6 +161,12 @@ namespace
 
 	constexpr float kMinMoveDistance = 0.05f;      // while sliding into place
 	constexpr float kSettledMoveDistance = 2.0f;   // once in place: only real shoves are corrected
+
+	// Set while this thread is inside one of our own NotifyAnimationGraph
+	// calls, so the event filter lets it through. Per thread: actor updates run
+	// on a pool, and a shared flag would wave through an AI attack fired on
+	// another thread for as long as we were sending.
+	thread_local bool gSendingOwnEvent = false;
 }
 
 ClashController* ClashController::GetSingleton()
@@ -183,6 +189,11 @@ void ClashController::InstallHooks()
 
 	// NPC update, same slot as the player's.
 	stl::write_vfunc<RE::Character, CharacterUpdateHook>(REL::Module::IsVR() ? 0xAE : 0xAD);
+
+	// TESObjectREFR::UpdateAnimation, where the frame's pose lands.
+	stl::write_vfunc<RE::PlayerCharacter, 0x7D, UpdateAnimationHook<RE::PlayerCharacter>>();
+	stl::write_vfunc<RE::Character, 0x7D, UpdateAnimationHook<RE::Character>>();
+	logger::info("Installed post-animation hooks");
 
 	// NotifyAnimationGraph lives on the IAnimationGraphManagerHolder vtable,
 	// which is the fourth vtable of the actor classes.
@@ -391,6 +402,50 @@ void ClashController::OnFrame(float a_delta)
 			_settled = true;
 			logger::debug("Settled: headings frozen, spine tracking off");
 		}
+
+		// Weapon geometry, before anything positions the pair this frame. The
+		// separation is re-solved only while the block pose is coming up and
+		// held from the settle on: a target that keeps moving is a warp every
+		// frame, which the movement system reads as walking.
+		MeasureBlades(player, npc);
+		if (Settings::GetSingleton()->solveClashDistance && !_solveLocked) {
+			if (_settled) {
+				_solveLocked = true;
+			}
+			SolveResult result;
+			if (!SolveClashDistance(_solveLocked && !_solveReported, result) && _solveLocked) {
+				// No standing position closes this gap; bend instead.
+				PlanTilt(result, player, npc);
+			}
+			_solveReported = _solveLocked;
+		} else if (_solveLocked && !_tiltResolved && _tiltValid.load(std::memory_order_acquire)) {
+			if (_tiltApplied.load(std::memory_order_acquire)) {
+				// The bend is in the pose just measured, so calculate separation again. 
+				// fail = keep the distance
+				// the tilt was planned for.
+				_tiltResolved = true;
+				const float planned = _solvedDistance;
+				SolveResult result;
+				if (SolveClashDistance(false, result)) {
+					logger::info("Clash distance re-solved over the tilt: {:.0f} units, gap {:.1f}", _solvedDistance, result.gap);
+				} else {
+					_solvedDistance = planned;
+					logger::info("Clash distance after the tilt: {:.1f} units still between the blades at {:.0f} apart",
+						result.gap, planned);
+				}
+			} else if (_clashTime > Settings::GetSingleton()->settleTime + 0.5f) {
+				// The hook has not run for that actor: the bend is not reaching
+				// the skeleton at all, which should not look like a tilt that
+				// merely did not help.
+				_tiltResolved = true;
+				logger::warn("Clash tilt: planned for {:08X} but never applied; UpdateAnimation has not run for it", _tilt.actor);
+			}
+		}
+
+		// Blades swung into the other fighter, measured off the blades just
+		// read -- which already carry the last frame's correction.
+		UpdateClearance(player, npc, dt);
+
 		// Freeze once settled and both are actually in the block pose.
 		if (_settled && !_frozen && Settings::GetSingleton()->freezeAfterSettle && _playerBlock.established && _npcBlock.established) {
 			Freeze(player, npc);
@@ -440,6 +495,11 @@ void ClashController::BeginClash()
 		return;
 	}
 
+	// Set before the phase that arms the filter: it tests the phase first and
+	// the holders second, so a live phase with stale holders passes everything.
+	_playerHolder = static_cast<RE::IAnimationGraphManagerHolder*>(player);
+	_npcHolder = static_cast<RE::IAnimationGraphManagerHolder*>(npc);
+
 	_phase = ClashPhase::kApproach;
 	_phaseTime = 0.0f;
 	_meter = 0.5f;
@@ -453,8 +513,18 @@ void ClashController::BeginClash()
 	_settled = false;
 	_frozen = false;
 	_npcAIDisabledForFreeze = false;
+	_solvedDistance = 0.0f;
+	_solveLocked = false;
+	_solveReported = false;
+	ClearTilt();
+	ClearClearance();
 
 	SetupGeometry(player, npc);
+
+	// Still in the swing that clashed, so this measurement is where the weapons
+	// actually met. Place the audio and first sparks here. The block
+	// pose the solve needs only exists from the next graph update.
+	MeasureBlades(player, npc);
 
 	// Hold the opponent still. Restrained stops movement and combat decisions
 	// but keeps the animation graph running; disabling AI would freeze the
@@ -477,10 +547,6 @@ void ClashController::BeginClash()
 
 	// Lock the player out of everything except the button they need to mash.
 	LockPlayer(RE::PlayerCharacter::GetSingleton());
-
-	// From here on only our events (and the cancel events) reach these graphs.
-	_playerHolder = static_cast<RE::IAnimationGraphManagerHolder*>(player);
-	_npcHolder = static_cast<RE::IAnimationGraphManagerHolder*>(npc);
 
 	// Snap both facings now rather than easing into them, and take shields out
 	// of the picture before the block animation is chosen. The pitch is only
@@ -560,6 +626,7 @@ void ClashController::BeginInstantWin(RE::Actor* a_player, RE::Actor* a_npc)
 	_outcome = ClashOutcome::kPlayerWon;
 	_meterOffset = 0.0f;
 	SetupGeometry(a_player, a_npc);
+	MeasureBlades(a_player, a_npc);
 
 	// The parry mod may have flagged both actors and started recoils; the
 	// player's swing is what broke through, so it is left alone bar the recoil.
@@ -573,6 +640,9 @@ void ClashController::BeginInstantWin(RE::Actor* a_player, RE::Actor* a_npc)
 	audio->Setup(_blockImpact);
 	RE::NiPoint3 contact = _center;
 	contact.z = (a_player->GetPositionZ() + a_npc->GetPositionZ()) * 0.5f + settings->cameraFraming.aimHeight * a_player->GetScale();
+	if (settings->contactFromWeapons && _contactValid) {
+		contact = _contactPoint;
+	}
 	audio->PlayOverpower(contact, a_player->Get3D());
 	_sparkTimer = settings->sparksInterval;  // one burst, right now
 	TickSparks(a_player, a_npc, 0.0f, 0.0f);
@@ -702,6 +772,13 @@ void ClashController::TickStandoff(RE::Actor* a_player, RE::Actor* a_npc, float 
 					locked * 180.0f / std::numbers::pi_v<float>,
 					RE::PlayerCamera::GetSingleton() ? RE::PlayerCamera::GetSingleton()->GetRuntimeData2().yaw * 180.0f / std::numbers::pi_v<float> : 0.0f);
 			}
+			if (_blades.valid) {
+				constexpr float kToDegrees = 180.0f / std::numbers::pi_v<float>;
+				logger::debug("blades: {:.0f} + {:.0f} units, gap {:.1f} at ({:.0f}, {:.0f}, {:.0f}), standing {:.0f} apart{}; clipping {:.1f}/{:.1f} units, turned back {:.1f}/{:.1f} deg",
+					_blades.player.Length(), _blades.npc.Length(), _bladeGap, _contactPoint.x, _contactPoint.y, _contactPoint.z,
+					StandoffDistance(), _solvedDistance > 0.0f ? " (solved)" : "",
+					_clearanceDepth[0], _clearanceDepth[1], _clearance[0].angle * kToDegrees, _clearance[1].angle * kToDegrees);
+			}
 		}
 	}
 
@@ -710,10 +787,19 @@ void ClashController::TickStandoff(RE::Actor* a_player, RE::Actor* a_npc, float 
 	} else if (_meter <= 0.0f) {
 		Finish(ClashOutcome::kPlayerLost);
 	} else if (_phaseTime >= settings->duration) {
-		// Time ran out with nobody pushed off the meter: a draw, wherever the
-		// marker sits. Both break off with the small stagger.
-		Finish(ClashOutcome::kDraw);
+		// Time ran out with nobody pushed off the meter.
+		Finish(TimeoutOutcome());
 	}
+}
+
+ClashOutcome ClashController::TimeoutOutcome() const
+{
+	// Either a draw wherever the marker sits, or the end it is nearer to takes
+	// the win. Dead centre is nobody's win, so it stays a draw.
+	if (Settings::GetSingleton()->timeoutResolution != 1 || _meter == 0.5f) {
+		return ClashOutcome::kDraw;
+	}
+	return _meter > 0.5f ? ClashOutcome::kPlayerWon : ClashOutcome::kPlayerLost;
 }
 
 void ClashController::Finish(ClashOutcome a_outcome)
@@ -734,6 +820,12 @@ void ClashController::Finish(ClashOutcome a_outcome)
 	_outcome = a_outcome;
 	_phase = ClashPhase::kResolve;
 	_phaseTime = 0.0f;
+
+	// Both pose corrections stop here rather than at the return to idle: the
+	// stagger that follows must not be bent or turned. Nothing to restore -
+	// the next animation update writes the graph's own pose back.
+	ClearTilt();
+	ClearClearance();
 
 	// Graphs must be running again before they are told to stop blocking.
 	Unfreeze();
@@ -830,6 +922,14 @@ void ClashController::ReturnToIdle()
 	_playerHolder = nullptr;
 	_npcHolder = nullptr;
 	_firstPersonClash = false;
+	_blades = {};
+	_contactValid = false;
+	_bladeGap = 0.0f;
+	_solvedDistance = 0.0f;
+	_solveLocked = false;
+	_solveReported = false;
+	ClearTilt();
+	ClearClearance();
 }
 
 void ClashController::Abort(std::string_view a_reason)
@@ -843,6 +943,8 @@ void ClashController::Abort(std::string_view a_reason)
 	const auto playerPtr = _playerHandle.get();
 	const auto npcPtr = _npcHandle.get();
 
+	ClearTilt();
+	ClearClearance();
 	Unfreeze();
 	EndCollisionIgnore();
 	ClashTDM::GetSingleton()->EndControl();
@@ -889,7 +991,7 @@ void ClashController::Abort(std::string_view a_reason)
 
 void ClashController::PositionActors(RE::Actor* a_player, RE::Actor* a_npc, float a_blend, float a_meterOffset)
 {
-	const float half = Settings::GetSingleton()->clashDistance * 0.5f;
+	const float half = StandoffDistance() * 0.5f;
 	_meterOffset = a_meterOffset;
 
 	// Targets are horizontal only: the character controller owns the height,
@@ -903,7 +1005,7 @@ void ClashController::PositionActors(RE::Actor* a_player, RE::Actor* a_npc, floa
 		desired.z = current.z;
 		const float dx = desired.x - current.x;
 		const float dy = desired.y - current.y;
-		const float threshold = a_blend < 1.0f ? kMinMoveDistance : kSettledMoveDistance;
+		const float threshold = a_blend < 1.0f || !_settled ? kMinMoveDistance : kSettledMoveDistance;
 		if (std::sqrt(dx * dx + dy * dy) > threshold) {
 			a_actor->SetPosition(desired, true);
 		}
@@ -913,6 +1015,606 @@ void ClashController::PositionActors(RE::Actor* a_player, RE::Actor* a_npc, floa
 	const RE::NiPoint3 npcTarget = _center + _axis * half + _axis * a_meterOffset;
 	move(a_player, _playerStart, playerTarget);
 	move(a_npc, _npcStart, npcTarget);
+}
+
+// ---------------------------------------------------------------------------
+// Weapon geometry
+// ---------------------------------------------------------------------------
+
+float ClashController::StandoffDistance() const
+{
+	const auto settings = Settings::GetSingleton();
+	if (settings->solveClashDistance && _solvedDistance > 0.0f) {
+		return _solvedDistance;
+	}
+	return settings->clashDistance;
+}
+
+// Both blades off their meshes, and the point where they are closest. Every
+// frame: the blades move with the pose and with the meter, so the contact
+// point has to follow them.
+void ClashController::MeasureBlades(RE::Actor* a_player, RE::Actor* a_npc)
+{
+	_blades = {};
+	_contactValid = false;
+	if (!a_player || !a_npc) {
+		return;
+	}
+
+	_blades.playerOrigin = a_player->GetPosition();
+	_blades.npcOrigin = a_npc->GetPosition();
+	_blades.player = BladeGeometry::Measure(a_player, _blades.npcOrigin);
+	_blades.npc = BladeGeometry::Measure(a_npc, _blades.playerOrigin);
+	_blades.valid = _blades.player.valid && _blades.npc.valid;
+	if (!_blades.valid) {
+		return;
+	}
+
+	RE::NiPoint3 onPlayer;
+	RE::NiPoint3 onNpc;
+	_bladeGap = BladeGeometry::Gap(_blades.player, _blades.npc, onPlayer, onNpc);
+	_contactPoint = (onPlayer + onNpc) * 0.5f;
+	_contactValid = true;
+}
+
+// The gap between the two measured blades if the pair stood a_distance apart.
+// Headings are locked, so the blades are only translated and a measurement
+// taken where the actors stand now still holds once they are slid. The meter
+// offset moves both by the same amount and cancels, so it is left out.
+float ClashController::GapAt(float a_distance, RE::NiPoint3* a_onPlayer, RE::NiPoint3* a_onNpc) const
+{
+	const float        half = a_distance * 0.5f;
+	const RE::NiPoint3 playerTarget = _center - _axis * half;
+	const RE::NiPoint3 npcTarget = _center + _axis * half;
+
+	// PositionActors writes X and Y only; the character controller owns Z.
+	const auto flat = [](RE::NiPoint3 a_offset) {
+		a_offset.z = 0.0f;
+		return a_offset;
+	};
+
+	RE::NiPoint3 onPlayer;
+	RE::NiPoint3 onNpc;
+	const float  gap = BladeGeometry::Gap(
+        _blades.player.Translated(flat(playerTarget - _blades.playerOrigin)),
+        _blades.npc.Translated(flat(npcTarget - _blades.npcOrigin)),
+        onPlayer, onNpc);
+	if (a_onPlayer) {
+		*a_onPlayer = onPlayer;
+	}
+	if (a_onNpc) {
+		*a_onNpc = onNpc;
+	}
+	return gap;
+}
+
+// The separation at which the blades meet, within the configured range.
+//
+// The gap is convex in the separation (distance between convex sets is convex
+// in their relative translation), so the closest the blades come is one
+// ternary search and the widest separation still touching is a bisection above
+// it. Widest rather than closest, to clip as little as contact allows.
+//
+// False when nothing in range brings them together: that miss is sideways or
+// vertical, which sliding along the axis cannot fix. fClashDistance stands.
+bool ClashController::SolveClashDistance(bool a_log, SolveResult& a_result)
+{
+	const auto settings = Settings::GetSingleton();
+	a_result = {};
+	if (!_blades.valid) {
+		_solvedDistance = 0.0f;
+		if (a_log) {
+			logger::info("Clash distance: no weapon mesh to measure on {}; keeping fClashDistance {:.0f}",
+				_blades.player.valid ? "the opponent" : "the player", settings->clashDistance);
+		}
+		return false;
+	}
+
+	constexpr float kTouching = 0.5f;  // units: closer together than a blade is thick
+
+	const float low = settings->solveDistanceMin;
+	const float high = std::max(low, settings->solveDistanceMax);
+
+	float a = low;
+	float b = high;
+	for (int i = 0; i < 40 && b - a > 0.05f; ++i) {
+		const float m1 = a + (b - a) / 3.0f;
+		const float m2 = b - (b - a) / 3.0f;
+		if (GapAt(m1) <= GapAt(m2)) {
+			b = m2;
+		} else {
+			a = m1;
+		}
+	}
+	const float  closest = (a + b) * 0.5f;
+	RE::NiPoint3 onPlayer;
+	RE::NiPoint3 onNpc;
+	const float  gap = GapAt(closest, &onPlayer, &onNpc);
+
+	a_result.distance = closest;
+	a_result.gap = gap;
+	a_result.onPlayer = onPlayer;
+	a_result.onNpc = onNpc;
+
+	if (gap > kTouching) {
+		_solvedDistance = 0.0f;
+		if (a_log) {
+			// Split the miss along the pair's own frame: only the first
+			// component is ours to close.
+			const RE::NiPoint3 perpendicular{ -_axis.y, _axis.x, 0.0f };
+			const auto         delta = onNpc - onPlayer;
+			logger::info("Clash distance: the blades stay {:.1f} units apart at best ({:.1f} along the axis, {:.1f} sideways, {:.1f} vertical); keeping fClashDistance {:.0f}",
+				gap, std::abs(delta.Dot(_axis)), std::abs(delta.Dot(perpendicular)), std::abs(delta.z), settings->clashDistance);
+		}
+		return false;
+	}
+
+	float touching = high;
+	if (GapAt(high) > kTouching) {
+		float lo = closest;
+		float hi = high;
+		for (int i = 0; i < 24 && hi - lo > 0.05f; ++i) {
+			const float mid = (lo + hi) * 0.5f;
+			if (GapAt(mid) <= kTouching) {
+				lo = mid;
+			} else {
+				hi = mid;
+			}
+		}
+		touching = lo;
+	}
+
+	_solvedDistance = std::clamp(touching - settings->solveBite, low, high);
+	a_result.touching = true;
+	a_result.distance = _solvedDistance;
+	a_result.gap = GapAt(_solvedDistance, &a_result.onPlayer, &a_result.onNpc);
+	if (a_log) {
+		logger::info("Clash distance solved: {:.0f} units (fClashDistance {:.0f}); blades {:.0f} and {:.0f} units long, touching from {:.0f} units apart",
+			_solvedDistance, settings->clashDistance, _blades.player.Length(), _blades.npc.Length(), touching);
+	}
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Height correction
+// ---------------------------------------------------------------------------
+
+namespace
+{
+	[[nodiscard]] float WrapAngle(float a_angle)
+	{
+		constexpr float kTwoPi = 2.0f * std::numbers::pi_v<float>;
+		while (a_angle > std::numbers::pi_v<float>) {
+			a_angle -= kTwoPi;
+		}
+		while (a_angle < -std::numbers::pi_v<float>) {
+			a_angle += kTwoPi;
+		}
+		return a_angle;
+	}
+
+	// A point turned about a horizontal axis reaches height A cos t + B sin t
+	// above the pivot (horizontal is what kills the third Rodrigues term), so
+	// the angle landing it at a given height is one asin. Of the two roots the
+	// smaller turn keeps the pose. False if out of reach or on the axis.
+	[[nodiscard]] bool SolvePitch(const RE::NiPoint3& a_pivot, const RE::NiPoint3& a_axis, const RE::NiPoint3& a_point,
+		float a_targetZ, float& a_angle)
+	{
+		const auto  arm = a_point - a_pivot;
+		const float cosTerm = arm.z;
+		const float sinTerm = a_axis.Cross(arm).z;
+		const float radius = std::sqrt(cosTerm * cosTerm + sinTerm * sinTerm);
+		const float wanted = a_targetZ - a_pivot.z;
+		if (radius < 1.0f || std::abs(wanted) > radius) {
+			return false;
+		}
+
+		const float phase = std::atan2(cosTerm, sinTerm);
+		const float base = std::asin(std::clamp(wanted / radius, -1.0f, 1.0f));
+		const float first = WrapAngle(base - phase);
+		const float second = WrapAngle(std::numbers::pi_v<float> - base - phase);
+		a_angle = std::abs(first) <= std::abs(second) ? first : second;
+		return true;
+	}
+
+	// Rodrigues by hand rather than NiMatrix3::MakeRotation, so the handedness
+	// provably matches the one SolvePitch solved in.
+	[[nodiscard]] RE::NiMatrix3 AxisAngle(const RE::NiPoint3& a_axis, float a_angle)
+	{
+		const float c = std::cos(a_angle);
+		const float s = std::sin(a_angle);
+		const float k = 1.0f - c;
+		const float x = a_axis.x;
+		const float y = a_axis.y;
+		const float z = a_axis.z;
+
+		RE::NiMatrix3 rotation;
+		rotation.entry[0][0] = c + k * x * x;
+		rotation.entry[0][1] = k * x * y - s * z;
+		rotation.entry[0][2] = k * x * z + s * y;
+		rotation.entry[1][0] = k * y * x + s * z;
+		rotation.entry[1][1] = c + k * y * y;
+		rotation.entry[1][2] = k * y * z - s * x;
+		rotation.entry[2][0] = k * z * x - s * y;
+		rotation.entry[2][1] = k * z * y + s * x;
+		rotation.entry[2][2] = c + k * z * z;
+		return rotation;
+	}
+
+	[[nodiscard]] float MoveToward(float a_value, float a_target, float a_step)
+	{
+		const float delta = a_target - a_value;
+		if (std::abs(delta) <= a_step) {
+			return a_target;
+		}
+		return a_value + (delta > 0.0f ? a_step : -a_step);
+	}
+
+	// Turning a blade about its grip carries a point along (axis x arm), so the
+	// axis sending it straight out of a body is perpendicular to both, and the
+	// angle is the distance over how fast that turn carries it there. First
+	// order, which is all a loop that measures again next frame needs.
+	[[nodiscard]] bool SolveClearance(const RE::NiPoint3& a_pivot, const RE::NiPoint3& a_point, const RE::NiPoint3& a_push,
+		float a_distance, RE::NiPoint3& a_axis, float& a_angle)
+	{
+		const auto arm = a_point - a_pivot;
+		if (arm.Length() < 5.0f) {
+			return false;  // the deepest point is the grip itself: the hand is in them, not the blade
+		}
+
+		auto        axis = arm.Cross(a_push);
+		const float length = axis.Length();
+		if (length < 1e-3f) {
+			return false;  // the way out runs along the blade; no turn about the grip goes there
+		}
+		axis /= length;
+
+		const float rate = axis.Cross(arm).Dot(a_push);  // units the point travels per radian
+		if (std::abs(rate) < 1.0f) {
+			return false;
+		}
+		a_axis = axis;
+		a_angle = a_distance / rate;
+		return true;
+	}
+
+	// Best first: Spine1 is the chest, far enough from the blade that a couple
+	// of degrees move it without the torso reading as a hunch.
+	constexpr const char* kSpineNodes[] = { "NPC Spine1 [Spn1]", "NPC Spine2 [Spn2]", "NPC Spine [Spn0]" };
+
+	constexpr float kMinTiltGap = 2.0f;  // vertical miss not worth bending for
+}
+
+
+namespace
+{
+	// Turn a node about its own origin by a world-space rotation, and put its
+	// subtree's world transforms back in step. Joints are written outermost
+	// first so that an inner one's parent already carries the outer turn.
+
+	// Teardown may outlive the handles; a plan keeps only the FormID, and the
+	// writes went to the third-person skeleton.
+	[[nodiscard]] RE::NiAVObject* ThirdPersonRoot(RE::FormID a_id)
+	{
+		if (a_id == 0) {
+			return nullptr;
+		}
+		const auto actor = RE::TESForm::LookupByID<RE::Actor>(a_id);
+		return actor ? actor->Get3D(false) : nullptr;
+	}
+
+	void RefreshNode(RE::NiAVObject* a_node)
+	{
+		RE::NiUpdateData data{};
+		data.flags = RE::NiUpdateData::Flag::kDirty;
+		a_node->Update(data);
+	}
+
+	// Put a node back as it was found, if our write is still the last thing in
+	// it. See ClashController::NodeTurn for why.
+	void RestoreNode(RE::NiAVObject* a_root, const char* a_name, ClashController::NodeTurn& a_turn)
+	{
+		if (!a_turn.valid) {
+			return;
+		}
+		a_turn.valid = false;
+		if (!a_root || !a_name) {
+			return;
+		}
+		const auto node = a_root->GetObjectByName(a_name);
+		if (!node || !(node->local.rotate == a_turn.written)) {
+			return;  // something has driven it since; it is not ours to put back
+		}
+		node->local.rotate = a_turn.input;
+		RefreshNode(node);
+	}
+
+	void TurnNode(RE::NiAVObject* a_root, const char* a_name, const RE::NiPoint3& a_axis, float a_angle, ClashController::NodeTurn& a_turn)
+	{
+		if (!a_root || !a_name) {
+			a_turn.valid = false;
+			return;
+		}
+		if (a_angle == 0.0f) {
+			RestoreNode(a_root, a_name, a_turn);
+			return;
+		}
+		const auto node = a_root->GetObjectByName(a_name);
+		if (!node || !node->parent) {
+			a_turn.valid = false;
+			return;
+		}
+
+		// Unchanged since our last write means nothing drives this node, so
+		// turn from what was there before rather than from our own output.
+		auto input = node->local.rotate;
+		if (a_turn.valid && input == a_turn.written) {
+			input = a_turn.input;
+		}
+
+		const auto parentRotation = node->parent->world.rotate;
+		node->local.rotate = parentRotation.Transpose() * AxisAngle(a_axis, a_angle) * parentRotation * input;
+		a_turn.input = input;
+		a_turn.written = node->local.rotate;
+		a_turn.valid = true;
+
+		RefreshNode(node);
+	}
+}
+
+void ClashController::ClearTilt()
+{
+	_tiltValid.store(false, std::memory_order_release);
+	_tiltApplied.store(false, std::memory_order_relaxed);
+	_tiltResolved = false;
+	if (_tilt.spineTurn.valid || _tilt.armTurn.valid) {
+		// Both are animated bones, so this usually finds nothing left to undo.
+		// One comparison, and the rule stays the same for every node we write.
+		const auto root = ThirdPersonRoot(_tilt.actor);
+		RestoreNode(root, _tilt.spineNode, _tilt.spineTurn);
+		RestoreNode(root, _tilt.armNode, _tilt.armTurn);
+	}
+	_tilt = {};
+}
+
+// The solve could not bring the blades together and what is left is mostly
+// vertical, so bend the higher one down to the other. Each joint is solved
+// from the same untilted pose for half the drop; applied in turn they compose
+// to the whole of it.
+void ClashController::PlanTilt(const SolveResult& a_result, RE::Actor* a_player, RE::Actor* a_npc)
+{
+	ClearTilt();
+
+	const auto settings = Settings::GetSingleton();
+	if (!settings->tiltToMeet || settings->tiltMaxDegrees <= 0.0f || !_blades.valid || !a_player || !a_npc) {
+		return;
+	}
+
+	const float vertical = a_result.onNpc.z - a_result.onPlayer.z;
+	if (std::abs(vertical) < kMinTiltGap) {
+		return;  // the miss is sideways or along the axis; a pitch reaches neither
+	}
+
+	const bool  playerIsHigh = vertical < 0.0f;
+	RE::Actor*  high = playerIsHigh ? a_player : a_npc;
+	const auto& blade = playerIsHigh ? _blades.player : _blades.npc;
+	const auto  point = playerIsHigh ? a_result.onPlayer : a_result.onNpc;
+	const float drop = std::abs(vertical);
+	// Each joint is solved from this same pose for half the drop; applied one
+	// after the other they compose to the whole of it.
+	const float halfTarget = point.z - drop * 0.5f;
+	const float wholeTarget = point.z - drop;
+
+	const auto root = high->Get3D(false);
+	if (!root) {
+		return;
+	}
+
+	// The closest points came back in the frame the pair will stand in, so
+	// the pivots have to be moved into it too.
+	auto offset = (playerIsHigh ? _center - _axis * (a_result.distance * 0.5f) : _center + _axis * (a_result.distance * 0.5f)) -
+	              (playerIsHigh ? _blades.playerOrigin : _blades.npcOrigin);
+	offset.z = 0.0f;
+
+	const RE::NiPoint3 axis{ -_axis.y, _axis.x, 0.0f };
+	const float        limit = settings->tiltMaxDegrees * std::numbers::pi_v<float> / 180.0f;
+
+	const auto solveJoint = [&](const char* a_name, float a_targetZ, float& a_angle) -> bool {
+		const auto node = root->GetObjectByName(a_name);
+		if (!node || !node->parent) {
+			return false;
+		}
+		float angle = 0.0f;
+		if (!SolvePitch(node->world.translate + offset, axis, point, a_targetZ, angle)) {
+			return false;
+		}
+		a_angle = std::clamp(angle, -limit, limit);
+		return true;
+	};
+
+	for (const auto name : kSpineNodes) {
+		if (solveJoint(name, halfTarget, _tilt.spineAngle)) {
+			_tilt.spineNode = name;
+			break;
+		}
+	}
+	const char* armNode = blade.leftHand ? "NPC L UpperArm [LUar]" : "NPC R UpperArm [RUar]";
+	if (solveJoint(armNode, halfTarget, _tilt.armAngle)) {
+		_tilt.armNode = armNode;
+	}
+
+	// A joint this skeleton has not got leaves the other one to do all of it.
+	if (!_tilt.spineNode && _tilt.armNode) {
+		solveJoint(_tilt.armNode, wholeTarget, _tilt.armAngle);
+	} else if (!_tilt.armNode && _tilt.spineNode) {
+		solveJoint(_tilt.spineNode, wholeTarget, _tilt.spineAngle);
+	}
+
+	if (!_tilt.spineNode && !_tilt.armNode) {
+		logger::info("Clash tilt: no spine or shoulder node on {}'s skeleton; the {:.0f}-unit height gap stands",
+			high->GetName(), drop);
+		return;
+	}
+
+	// Committed together with the plan: stand at the separation that leaves
+	// only the vertical gap, then bend that away. Holding fClashDistance here
+	// would leave a gap along the axis as well, and no amount of bending
+	// reaches that one.
+	_solvedDistance = a_result.distance;
+	_tilt.actor = high->GetFormID();
+	_tilt.axis = axis;
+	_tiltValid.store(true, std::memory_order_release);
+
+	constexpr float kToDegrees = 180.0f / std::numbers::pi_v<float>;
+	logger::info("Clash tilt: bending {} down to close a {:.0f}-unit height gap ({:.1f} deg at {}, {:.1f} deg at the {} shoulder), standing {:.0f} apart",
+		high->GetName(), drop, _tilt.spineAngle * kToDegrees, _tilt.spineNode ? _tilt.spineNode : "no spine node",
+		_tilt.armAngle * kToDegrees, blade.leftHand ? "left" : "right", _solvedDistance);
+}
+
+// Runs right after the animation update has written this actor's pose, so
+// everything here lands on top of it.
+void ClashController::ApplyPoseFixups(RE::Actor* a_actor)
+{
+	if (!a_actor) {
+		return;
+	}
+	const bool tilt = _tiltValid.load(std::memory_order_acquire) && a_actor->GetFormID() == _tilt.actor;
+	const bool clearance = _clearanceValid.load(std::memory_order_acquire);
+	if (!tilt && !clearance) {
+		return;
+	}
+	const auto root = a_actor->Get3D(false);
+	if (!root) {
+		return;
+	}
+
+	// Spine and shoulder first, wrist and weapon after: the order the joints
+	// come in down the arm.
+	if (tilt) {
+		ApplyTilt(a_actor, root);
+	}
+	if (clearance) {
+		ApplyClearance(a_actor, root);
+	}
+}
+
+void ClashController::ApplyTilt(RE::Actor*, RE::NiAVObject* a_root)
+{
+	TurnNode(a_root, _tilt.spineNode, _tilt.axis, _tilt.spineAngle, _tilt.spineTurn);
+	TurnNode(a_root, _tilt.armNode, _tilt.axis, _tilt.armAngle, _tilt.armTurn);
+	_tiltApplied.store(true, std::memory_order_release);
+}
+
+void ClashController::ApplyClearance(RE::Actor* a_actor, RE::NiAVObject* a_root)
+{
+	const auto id = a_actor->GetFormID();
+	for (auto& clearance : _clearance) {
+		if (clearance.actor != id) {
+			continue;
+		}
+		// The wrist takes what it is allowed, since the hand turns with it; only
+		// the remainder goes to the weapon, where the handle turns inside a fist
+		// that stays put. Zero still comes through, to put the weapon node back.
+		const float limit = Settings::GetSingleton()->clearanceMaxDegrees * std::numbers::pi_v<float> / 180.0f;
+		const float wrist = std::clamp(clearance.angle, -limit, limit);
+		const float weapon = std::clamp(clearance.angle - wrist, -limit, limit);
+		TurnNode(a_root, clearance.leftHand ? "NPC L Hand [LHand]" : "NPC R Hand [RHand]", clearance.axis, wrist, clearance.handTurn);
+		TurnNode(a_root, clearance.leftHand ? "SHIELD" : "WEAPON", clearance.axis, weapon, clearance.weaponTurn);
+		return;
+	}
+}
+
+// A loop, not a solve: measured each frame off blades already carrying the
+// last correction, wound on while the blade is inside the other fighter, held
+// through a deadband, eased back to nothing once it is clear.
+void ClashController::UpdateClearance(RE::Actor* a_player, RE::Actor* a_npc, float a_dt)
+{
+	const auto settings = Settings::GetSingleton();
+	if (!settings->clearWeaponClipping || settings->clearanceMaxDegrees <= 0.0f || !_blades.valid) {
+		ClearClearance();
+		return;
+	}
+
+	constexpr float kMargin = 1.5f;   // clear the body by this much
+	constexpr float kRelease = 4.0f;  // and by this much before easing off again
+	const float     step = 2.5f * a_dt;
+	// Both joints take up to the configured turn, so the total is twice it.
+	const float limit = 2.0f * settings->clearanceMaxDegrees * std::numbers::pi_v<float> / 180.0f;
+
+	struct Side
+	{
+		RE::Actor*                  actor;
+		RE::Actor*                  opponent;
+		const BladeGeometry::Blade& blade;
+	};
+	const Side sides[2] = {
+		{ a_player, a_npc, _blades.player },
+		{ a_npc, a_player, _blades.npc },
+	};
+
+	bool any = false;
+	for (std::size_t i = 0; i < std::size(sides); ++i) {
+		auto&      clearance = _clearance[i];
+		const auto body = BladeGeometry::MeasureBody(sides[i].opponent, settings->clearanceBodyRadius);
+
+		RE::NiPoint3 onBlade;
+		RE::NiPoint3 push;
+		const float  depth = BladeGeometry::Penetration(sides[i].blade, body, onBlade, push);
+		_clearanceDepth[i] = depth;
+
+		float target = clearance.angle;
+		if (depth > 0.0f) {
+			// Still inside them. An axis in use is kept and only its angle
+			// adjusted: the angle means nothing without the axis it was wound
+			// about, so swapping one in under an applied correction would snap
+			// the blade. The adjustment is signed, so an axis turning the wrong
+			// way unwinds itself and carries on through zero. One that cannot
+			// move the point out is dropped, but only once eased back to zero.
+			const auto  arm = onBlade - sides[i].blade.grip;
+			const float rate = clearance.angle != 0.0f ? clearance.axis.Cross(arm).Dot(push) : 0.0f;
+			if (std::abs(rate) >= 1.0f) {
+				target = clearance.angle + (depth + kMargin) / rate;
+			} else if (clearance.angle != 0.0f) {
+				target = 0.0f;
+			} else {
+				RE::NiPoint3 axis;
+				float        extra = 0.0f;
+				if (SolveClearance(sides[i].blade.grip, onBlade, push, depth + kMargin, axis, extra)) {
+					clearance.axis = axis;
+					target = extra;
+				}
+			}
+		} else if (depth < -kRelease) {
+			target = 0.0f;  // clear with room to spare: hand it back to the animation
+		}
+
+		target = std::clamp(target, -limit, limit);
+		clearance.angle = MoveToward(clearance.angle, target, step);
+		clearance.actor = sides[i].actor->GetFormID();
+		clearance.leftHand = sides[i].blade.leftHand;
+		// Zero still needs one more pass through the hook to put the weapon node
+		// back, so an outstanding write counts as work.
+		any = any || clearance.angle != 0.0f || clearance.handTurn.valid || clearance.weaponTurn.valid;
+	}
+
+	_clearanceValid.store(any, std::memory_order_release);
+}
+
+void ClashController::ClearClearance()
+{
+	_clearanceValid.store(false, std::memory_order_release);
+	for (auto& clearance : _clearance) {
+		// The weapon node is not animated: left alone it keeps the last turn
+		// for as long as the weapon stays equipped.
+		if (clearance.handTurn.valid || clearance.weaponTurn.valid) {
+			const auto root = ThirdPersonRoot(clearance.actor);
+			RestoreNode(root, clearance.leftHand ? "NPC L Hand [LHand]" : "NPC R Hand [RHand]", clearance.handTurn);
+			RestoreNode(root, clearance.leftHand ? "SHIELD" : "WEAPON", clearance.weaponTurn);
+		}
+		clearance = {};
+	}
+	_clearanceDepth[0] = 0.0f;
+	_clearanceDepth[1] = 0.0f;
 }
 
 void ClashController::FaceEachOther(RE::Actor* a_player, RE::Actor* a_npc)
@@ -991,14 +1693,14 @@ void ClashController::FaceEachOther(RE::Actor* a_player, RE::Actor* a_npc)
 
 void ClashController::SendEvent(RE::Actor* a_actor, const char* a_event)
 {
-	_sendingOwnEvent = true;
+	gSendingOwnEvent = true;
 	a_actor->NotifyAnimationGraph(a_event);
-	_sendingOwnEvent = false;
+	gSendingOwnEvent = false;
 }
 
 bool ClashController::AllowGraphEvent(RE::IAnimationGraphManagerHolder* a_holder, const RE::BSFixedString& a_event) const
 {
-	if (_sendingOwnEvent) {
+	if (gSendingOwnEvent) {
 		return true;
 	}
 	if (_phase != ClashPhase::kApproach && _phase != ClashPhase::kStandoff) {
@@ -1067,7 +1769,39 @@ void ClashController::HoldBlock(RE::Actor* a_actor, BlockHold& a_hold, float a_d
 	if (_frozen) {
 		return;  // nothing moves; nothing to re-assert
 	}
-	if (a_actor->IsBlocking()) {
+
+	// An attack still on the books keeps the graph out of the block, and for
+	// an opponent asking again does not help: MCO gates the way out on
+	// blockStart to the player, so a retry sending only blockStart can never
+	// recover an NPC back in a swing. Hence the block counts as held only once
+	// the attack state has cleared, and every retry cancels again.
+	//
+	// After half a second the gate is given up on; there is nothing stronger
+	// to send. IdleForceDefaultState would end the attack, but its default
+	// state is the unarmed one and the graph leaves it believing the hands are
+	// empty while the weapon is still drawn -- see CancelAttack.
+	const bool stillAttacking = a_actor->AsActorState()->GetAttackState() != RE::ATTACK_STATE_ENUM::kNone;
+	a_hold.attackTime = stillAttacking ? a_hold.attackTime + a_dt : 0.0f;
+	a_hold.cancelTimer += a_dt;
+	const bool attacking = stillAttacking && a_hold.attackTime < 0.5f;
+
+	// MCO_EndAnimation blends over 0.2s and self-transitions, so a cancel
+	// re-sent inside that window restarts its own blend and holds the swing
+	// longer. The block may be re-asserted freely; the cancel waits.
+	const auto cancel = [&] {
+		if (a_hold.cancelTimer >= 0.25f) {
+			a_hold.cancelTimer = 0.0f;
+			CancelAttack(a_actor);
+		}
+	};
+
+	if (stillAttacking && !attacking && !a_hold.gaveUpOnAttack) {
+		a_hold.gaveUpOnAttack = true;
+		logger::info("Block hold: {}'s attack state has not cleared in {:.1f}s; holding the block on its own from here",
+			a_actor->GetName(), a_hold.attackTime);
+	}
+
+	if (a_actor->IsBlocking() && !attacking) {
 		a_hold.established = true;
 		a_hold.everEstablished = true;
 		return;
@@ -1079,8 +1813,11 @@ void ClashController::HoldBlock(RE::Actor* a_actor, BlockHold& a_hold, float a_d
 		// raise in progress is never restarted every frame.
 		a_hold.established = false;
 		a_hold.resendTimer = 0.0f;
+		if (attacking) {
+			cancel();
+		}
 		SendBlock(a_actor);
-		logger::debug("Block hold on {} lost; re-entering", a_actor->GetName());
+		logger::debug("Block hold on {} lost{}; re-entering", a_actor->GetName(), attacking ? " to an attack" : "");
 		return;
 	}
 
@@ -1088,10 +1825,15 @@ void ClashController::HoldBlock(RE::Actor* a_actor, BlockHold& a_hold, float a_d
 	// cancelled state, so the retry is quick; a lost hold later is re-sent
 	// on a longer cooldown so a raise in progress is not restarted.
 	a_hold.resendTimer += a_dt;
-	if (a_hold.resendTimer >= (a_hold.everEstablished ? 0.35f : 0.1f)) {
-		a_hold.resendTimer = 0.0f;
-		SendBlock(a_actor);
+	if (a_hold.resendTimer < (a_hold.everEstablished ? 0.35f : 0.1f)) {
+		return;
 	}
+	a_hold.resendTimer = 0.0f;
+
+	if (attacking) {
+		cancel();
+	}
+	SendBlock(a_actor);
 }
 
 // Interrupt whatever the actor is playing and enter the block stance in the
@@ -1110,7 +1852,16 @@ void ClashController::HoldBlock(RE::Actor* a_actor, BlockHold& a_hold, float a_d
 // The graph's own interrupt events are used rather than IdleForceDefaultState,
 // which resets the drawn-weapon state and leaves the actor unable to block now
 // or attack afterwards. iWantBlock is cleared again by SendBlockStop.
-void ClashController::CancelAndBlock(RE::Actor* a_actor)
+//
+// Everything but the block itself is CancelAttack, which the per-frame hold
+// re-sends while an attack refuses to clear: one shot landing in the wrong
+// graph update is the difference between a standoff and an opponent swinging
+// through it. MCO_EndAnimation is the opponent's only way out of an MCO
+// attack -- the transition leaving one on blockStart is conditioned on
+// (IsNPC == 0) && (MCO_bEnableBlockCancel). That variable is left alone: it
+// would outlive the clash and hand the player a block-cancel they never asked
+// for.
+void ClashController::CancelAttack(RE::Actor* a_actor)
 {
 	a_actor->SetGraphVariableInt("iWantBlock", 1);
 	SendEvent(a_actor, "MCO_EndAnimation");
@@ -1120,6 +1871,11 @@ void ClashController::CancelAndBlock(RE::Actor* a_actor)
 	// Clear the parry mod's flag in case its post-hit reset was skipped by
 	// our hit swallow.
 	a_actor->SetGraphVariableBool("bMaxsuWeaponParry_InWeaponParry", false);
+}
+
+void ClashController::CancelAndBlock(RE::Actor* a_actor)
+{
+	CancelAttack(a_actor);
 	SendBlock(a_actor);
 }
 
@@ -1246,9 +2002,14 @@ void ClashController::TickSparks(RE::Actor* a_player, RE::Actor* a_npc, float a_
 	static std::mt19937                   rng{ std::random_device{}() };
 	std::uniform_real_distribution<float> jitter(-settings->sparksJitter, settings->sparksJitter);
 
-	const float  ground = (a_player->GetPositionZ() + a_npc->GetPositionZ()) * 0.5f;
-	RE::NiPoint3 point = _center + _axis * a_meterOffset;
-	point.z = ground + settings->sparksHeight * a_player->GetScale();
+	RE::NiPoint3 point;
+	if (settings->contactFromWeapons && _contactValid) {
+		point = _contactPoint;
+	} else {
+		const float ground = (a_player->GetPositionZ() + a_npc->GetPositionZ()) * 0.5f;
+		point = _center + _axis * a_meterOffset;
+		point.z = ground + settings->sparksHeight * a_player->GetScale();
+	}
 	point.x += jitter(rng);
 	point.y += jitter(rng);
 	point.z += jitter(rng);
@@ -1643,6 +2404,12 @@ bool ClashController::GetContactPoint(RE::NiPoint3& a_point) const
 		return false;
 	}
 
+	// Where the two blades actually are, when they could be measured.
+	if (Settings::GetSingleton()->contactFromWeapons && _contactValid) {
+		a_point = _contactPoint;
+		return true;
+	}
+
 	a_point = _center + _axis * _meterOffset;
 	a_point.z = (playerPtr->GetPositionZ() + npcPtr->GetPositionZ()) * 0.5f +
 	            ClashCamera::GetSingleton()->Framing().aimHeight * playerPtr->GetScale();
@@ -1660,7 +2427,7 @@ bool ClashController::GetStandoffPose(StandoffPose& a_pose) const
 		return false;
 	}
 
-	const float half = Settings::GetSingleton()->clashDistance * 0.5f;
+	const float half = StandoffDistance() * 0.5f;
 	a_pose.playerPosition = _center - _axis * half;
 	a_pose.playerPosition.z = playerPtr->GetPositionZ();
 	a_pose.playerHeading = _playerHeading;

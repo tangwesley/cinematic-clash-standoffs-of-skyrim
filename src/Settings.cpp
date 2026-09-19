@@ -18,6 +18,7 @@ namespace
 
 	constexpr const char* kDifficultyChoices[] = { "Easy", "Normal", "Hard" };
 	constexpr const char* kShieldChoices[] = { "Leave alone", "Hide the shield model" };
+	constexpr const char* kTimeoutChoices[] = { "Draw", "The side the meter favours wins" };
 
 	// ---------------------------------------------------------------------
 	// The key table. Order is the INI's order; the help text is the INI's
@@ -33,12 +34,22 @@ namespace
 		{ "General", "fMaxStartDistance", &SD::maxStartDistance, 0, kInf, "Max start distance", "A standoff will not start if the two actors are further apart than this (units)." },
 
 		// [Standoff]
-		{ "Standoff", "fDuration", &SD::duration, 0.25f, kInf, "Duration (s)", "Seconds the quick time event lasts. Reaching the end without either side pushed off the meter is a draw." },
+		{ "Standoff", "fDuration", &SD::duration, 0.25f, kInf, "Duration (s)", "Seconds the quick time event lasts. Reaching the end without either side pushed off the meter is a draw, or a win for the side the meter favours -- see Timer runs out, under Outcome." },
 		{ "Standoff", "fPressGain", &SD::pressGain, 0, kInf, "Press gain", "Meter gained per attack press (meter runs 0..1, starts at 0.5). How hard the opponent pushes back is set under Difficulty." },
 		{ "Standoff", "bStaminaAffectsPlayer", &SD::staminaAffectsPlayer, 0, 1, "Stamina affects player", "Low player stamina weakens each press (down to 50% at empty)." },
 		{ "Standoff", "bStaminaAffectsNpc", &SD::staminaAffectsNpc, 0, 1, "Stamina affects NPC", "Low NPC stamina weakens its push (down to 50% at empty)." },
 		{ "Standoff", "fStaminaCostPerPress", &SD::staminaCostPerPress, 0, kInf, "Stamina cost per press", "Player stamina spent per press." },
-		{ "Standoff", "fClashDistance", &SD::clashDistance, 20, kInf, "Clash distance", "Distance between the two actors while locked together (units)." },
+		{ "Standoff", "fClashDistance", &SD::clashDistance, 20, kInf, "Clash distance", "Distance between the two actors while locked together (units). Ignored while Solve clash distance is on and the solve succeeds." },
+		{ "Standoff", "bSolveClashDistance", &SD::solveClashDistance, 0, 1, "Solve clash distance", "Measure both weapons off their own meshes once the block pose is up and stand the pair at the distance that makes the two blades touch, instead of the fixed Clash distance. When no distance in the range below makes them meet (the miss is sideways or vertical, which sliding the pair cannot fix) Clash distance is used and the reason is logged." },
+		{ "Standoff", "fSolveDistanceMin", &SD::solveDistanceMin, 20, kInf, "Solve distance min", "Closest the solve may put the two actors (units). Two daggers would otherwise solve to inside each other." },
+		{ "Standoff", "fSolveDistanceMax", &SD::solveDistanceMax, 20, kInf, "Solve distance max", "Furthest the solve may put the two actors (units). Two greatswords would otherwise solve to arm's length apart." },
+		{ "Standoff", "fSolveBite", &SD::solveBite, 0, kInf, "Solve bite", "Units closer than first contact, so the blades visibly cross instead of just touching." },
+		{ "Standoff", "bTiltToMeet", &SD::tiltToMeet, 0, 1, "Tilt to meet", "When the two blades miss each other vertically -- a height or scale difference, or two block poses that hold the guard at different heights -- bend the fighter whose blade sits higher down towards the other one until they cross. Half the movement comes from their spine and half from their sword arm's shoulder. Nothing to do with a sideways miss, and it does nothing at all when the blades already meet." },
+		{ "Standoff", "fTiltMaxDegrees", &SD::tiltMaxDegrees, 0, 45, "Tilt max (deg)", "Most either joint may be turned. The spine and the shoulder each take half the correction, so the blade swings up to about twice this. Past 15 degrees or so the pose starts to look wrong; 0 = off." },
+		{ "Standoff", "bClearWeaponClipping", &SD::clearWeaponClipping, 0, 1, "Clear weapon clipping", "Some block animations swing the weapon round far enough that the blade ends up inside the other fighter. When that happens the blade is turned back out of them until it clears, at the wrist first and then at the weapon itself, and the correction eases off again as soon as the animation stops needing it." },
+		{ "Standoff", "fClearanceMaxDegrees", &SD::clearanceMaxDegrees, 0, 60, "Clearance max (deg)", "Most either the wrist or the weapon may be turned to clear the other fighter. The wrist takes as much as it can first, because the hand turns with it; only what is left over goes to the weapon, where the grip visibly slips in the fist past 15 degrees or so. 0 = off." },
+		{ "Standoff", "fClearanceBodyRadius", &SD::clearanceBodyRadius, 1, 60, "Clearance body radius", "How wide the other fighter is taken to be: the blade is kept this many units clear of the line from their hips to their head, scaled by their size. Larger keeps blades further out of the chest but turns them more." },
+		{ "Standoff", "bContactFromWeapons", &SD::contactFromWeapons, 0, 1, "Contact from weapons", "Put the sparks, the scrape loop and the camera's aim at the point where the two measured blades are actually closest. Off, or when a weapon's mesh cannot be read, the contact point is the midpoint between the actors at [Sparks] fHeight / [Camera] fAimHeight above the ground." },
 		{ "Standoff", "fPushDistance", &SD::pushDistance, 0, kInf, "Push distance", "How far the pair slides along the clash axis as the meter swings (units at meter 0 or 1). The slide can read as walking or turning to the movement system. 0 = off." },
 		{ "Standoff", "fApproachTime", &SD::approachTime, 0.05f, kInf, "Approach time (s)", "Seconds to slide both actors into position." },
 		{ "Standoff", "fSettleTime", &SD::settleTime, 0, kInf, "Settle time (s)", "Seconds after the clash begins during which the actors keep being turned to face each other. After that their headings freeze and head/spine tracking is switched off." },
@@ -108,7 +119,8 @@ namespace
 		// [Outcome]
 		{ "Outcome", "fLoserStaggerMagnitude", &SD::loserStaggerMagnitude, 0, 1, "Loser stagger", "Stagger magnitude sent to the loser (1.0 = the large stagger, 0 = none)." },
 		{ "Outcome", "fWinnerStaggerMagnitude", &SD::winnerStaggerMagnitude, 0, 1, "Winner stagger", "Stagger magnitude sent to the winner (0 = none)." },
-		{ "Outcome", "fDrawStaggerMagnitude", &SD::drawStaggerMagnitude, 0, 1, "Draw stagger", "When the timer runs out with neither side pushed off the meter, both actors take this stagger instead (0.25 = the small stagger, 0 = none)." },
+		{ "Outcome", "fDrawStaggerMagnitude", &SD::drawStaggerMagnitude, 0, 1, "Draw stagger", "Stagger both actors take when the clash ends in a draw (0.25 = the small stagger, 0 = none)." },
+		{ "Outcome", "iTimeoutResolution", &SD::timeoutResolution, 0, 1, "Timer runs out", "What a standoff nobody pushed off the meter becomes when the timer runs out. Draw: both break off with the draw stagger and neither counts as winner or loser. The side the meter favours wins: whichever end the marker sits nearer to takes the win, with the usual winner and loser staggers. A marker dead on the centre is a draw either way.", kTimeoutChoices },
 		{ "Outcome", "fOutcomeWindow", &SD::outcomeWindow, 0, kInf, "Outcome window (s)", "Seconds the CinematicClash_IsClashWinner / _IsClashLoser OAR conditions stay true." },
 
 		// [Messages]
@@ -303,6 +315,9 @@ void Settings::Load()
 void Settings::Validate()
 {
 	cameraPresetList = Trim(cameraPresetList);
+	if (solveDistanceMax < solveDistanceMin) {
+		std::swap(solveDistanceMin, solveDistanceMax);
+	}
 	if (hudGameFont.empty()) {
 		hudGameFont = "$EverywhereFont";
 	}
