@@ -18,6 +18,7 @@ namespace
 
 	constexpr const char* kDifficultyChoices[] = { "Easy", "Normal", "Hard" };
 	constexpr const char* kShieldChoices[] = { "Leave alone", "Hide the shield model" };
+	constexpr const char* kTimeoutChoices[] = { "Draw", "The side the meter favours wins" };
 
 	// ---------------------------------------------------------------------
 	// The key table. Order is the INI's order; the help text is the INI's
@@ -33,7 +34,7 @@ namespace
 		{ "General", "fMaxStartDistance", &SD::maxStartDistance, 0, kInf, "Max start distance", "A standoff will not start if the two actors are further apart than this (units)." },
 
 		// [Standoff]
-		{ "Standoff", "fDuration", &SD::duration, 0.25f, kInf, "Duration (s)", "Seconds the quick time event lasts. Reaching the end without either side pushed off the meter is a draw." },
+		{ "Standoff", "fDuration", &SD::duration, 0.25f, kInf, "Duration (s)", "Seconds the quick time event lasts. Reaching the end without either side pushed off the meter is a draw, or a win for the side the meter favours -- see Timer runs out, under Outcome." },
 		{ "Standoff", "fPressGain", &SD::pressGain, 0, kInf, "Press gain", "Meter gained per attack press (meter runs 0..1, starts at 0.5). How hard the opponent pushes back is set under Difficulty." },
 		{ "Standoff", "bStaminaAffectsPlayer", &SD::staminaAffectsPlayer, 0, 1, "Stamina affects player", "Low player stamina weakens each press (down to 50% at empty)." },
 		{ "Standoff", "bStaminaAffectsNpc", &SD::staminaAffectsNpc, 0, 1, "Stamina affects NPC", "Low NPC stamina weakens its push (down to 50% at empty)." },
@@ -118,7 +119,8 @@ namespace
 		// [Outcome]
 		{ "Outcome", "fLoserStaggerMagnitude", &SD::loserStaggerMagnitude, 0, 1, "Loser stagger", "Stagger magnitude sent to the loser (1.0 = the large stagger, 0 = none)." },
 		{ "Outcome", "fWinnerStaggerMagnitude", &SD::winnerStaggerMagnitude, 0, 1, "Winner stagger", "Stagger magnitude sent to the winner (0 = none)." },
-		{ "Outcome", "fDrawStaggerMagnitude", &SD::drawStaggerMagnitude, 0, 1, "Draw stagger", "When the timer runs out with neither side pushed off the meter, both actors take this stagger instead (0.25 = the small stagger, 0 = none)." },
+		{ "Outcome", "fDrawStaggerMagnitude", &SD::drawStaggerMagnitude, 0, 1, "Draw stagger", "Stagger both actors take when the clash ends in a draw (0.25 = the small stagger, 0 = none)." },
+		{ "Outcome", "iTimeoutResolution", &SD::timeoutResolution, 0, 1, "Timer runs out", "What a standoff nobody pushed off the meter becomes when the timer runs out. Draw: both break off with the draw stagger and neither counts as winner or loser. The side the meter favours wins: whichever end the marker sits nearer to takes the win, with the usual winner and loser staggers. A marker dead on the centre is a draw either way.", kTimeoutChoices },
 		{ "Outcome", "fOutcomeWindow", &SD::outcomeWindow, 0, kInf, "Outcome window (s)", "Seconds the CinematicClash_IsClashWinner / _IsClashLoser OAR conditions stay true." },
 
 		// [Messages]

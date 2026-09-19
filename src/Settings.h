@@ -176,6 +176,10 @@ struct SettingsData
 	float loserStaggerMagnitude{ 1.0f };   // 1.0 = the large stagger
 	float winnerStaggerMagnitude{ 0.0f };  // 0 = winner is not staggered
 	float drawStaggerMagnitude{ 0.25f };   // both actors when the timer runs out; small stagger
+	// What a standoff the timer ends becomes: 0 = a draw wherever the marker
+	// sits, 1 = the side the marker is nearer to wins it. A marker dead on the
+	// centre is a draw either way.
+	int   timeoutResolution{ 0 };
 	float outcomeWindow{ 1.0f };           // seconds the winner/loser OAR conditions stay true
 
 	// --- [Messages] --------------------------------------------------------

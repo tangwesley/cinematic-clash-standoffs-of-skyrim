@@ -787,10 +787,19 @@ void ClashController::TickStandoff(RE::Actor* a_player, RE::Actor* a_npc, float 
 	} else if (_meter <= 0.0f) {
 		Finish(ClashOutcome::kPlayerLost);
 	} else if (_phaseTime >= settings->duration) {
-		// Time ran out with nobody pushed off the meter: a draw, wherever the
-		// marker sits. Both break off with the small stagger.
-		Finish(ClashOutcome::kDraw);
+		// Time ran out with nobody pushed off the meter.
+		Finish(TimeoutOutcome());
 	}
+}
+
+ClashOutcome ClashController::TimeoutOutcome() const
+{
+	// Either a draw wherever the marker sits, or the end it is nearer to takes
+	// the win. Dead centre is nobody's win, so it stays a draw.
+	if (Settings::GetSingleton()->timeoutResolution != 1 || _meter == 0.5f) {
+		return ClashOutcome::kDraw;
+	}
+	return _meter > 0.5f ? ClashOutcome::kPlayerWon : ClashOutcome::kPlayerLost;
 }
 
 void ClashController::Finish(ClashOutcome a_outcome)

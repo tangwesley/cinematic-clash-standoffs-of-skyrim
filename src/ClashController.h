@@ -244,6 +244,9 @@ private:
 	void SetupGeometry(RE::Actor* a_player, RE::Actor* a_npc);
 	void TickApproach(RE::Actor* a_player, RE::Actor* a_npc, float a_dt);
 	void TickStandoff(RE::Actor* a_player, RE::Actor* a_npc, float a_dt);
+	// What the standoff resolves to when the timer runs out: a draw, or a win
+	// for the side the meter favours ([Outcome] iTimeoutResolution).
+	[[nodiscard]] ClashOutcome TimeoutOutcome() const;
 	void Finish(ClashOutcome a_outcome);
 	void TickResolve(RE::Actor* a_player, RE::Actor* a_npc);
 	void TickAftermath(float a_dt);

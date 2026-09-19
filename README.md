@@ -13,7 +13,8 @@ stops for a cinematic standoff:
    tug-of-war meter at the bottom of the screen shows the balance and the time left.
 4. The loser plays the large stagger, the winner is free to follow up. If the timer runs
    out with neither side pushed off the meter, it is a draw wherever the marker sits: both
-   break off with a small stagger.
+   break off with a small stagger. `[Outcome] iTimeoutResolution = 1` decides those on the
+   meter instead, so whichever side the marker sits nearer to wins.
 
 ## Requirements
 
@@ -162,7 +163,8 @@ shows up in the menu within a second. The ones you are most likely to tune:
   3, 4 or 5 attack presses per second (`fEasyPressesPerSecond` and friends) against an
   opponent of equal weapon skill, so pressing faster than that drives the meter to your
   end and slower lets it fall to theirs; a standoff that reaches the timer instead is a
-  draw (`[Outcome] fDrawStaggerMagnitude`).
+  draw (`[Outcome] fDrawStaggerMagnitude`), or a win for whichever side the meter favours
+  when `[Outcome] iTimeoutResolution` is set to 1.
   `fSkillInfluence` scales the push by the gap between the two governing weapon skills
   (One-Handed or Two-Handed, whichever each weapon uses). With `fAutoWinSkillGap` (default
   15) an opponent that many skill points behind the player skips the standoff and takes the
