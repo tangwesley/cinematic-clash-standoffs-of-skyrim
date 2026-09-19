@@ -56,6 +56,8 @@ set(SOURCES
 
 	src/Settings.h
 	src/Settings.cpp
+	src/BladeGeometry.h
+	src/BladeGeometry.cpp
 	src/BossRecognition.h
 	src/BossRecognition.cpp
 	src/ClashController.h

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "BladeGeometry.h"
+
 // ---------------------------------------------------------------------------
 // The clash state machine.
 //
@@ -128,6 +130,43 @@ public:
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
 
+	// TESObjectREFR::UpdateAnimation (slot 0x7D; the actor vtables only
+	// diverge between runtimes past 0x82). The frame's pose is on the skeleton
+	// by the time the original returns, and a node write any earlier is
+	// overwritten by it.
+	template <class Class>
+	struct UpdateAnimationHook
+	{
+		static void thunk(RE::TESObjectREFR* a_this, float a_delta)
+		{
+			func(a_this, a_delta);
+			GetSingleton()->ApplyPoseFixups(static_cast<Class*>(a_this));
+		}
+
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+
+	// The height correction and the blade turned out of the other fighter.
+	// Does nothing for an actor not in a clash. Public for the hook above.
+	void ApplyPoseFixups(RE::Actor* a_actor);
+
+	// What a joint write left in a node, so the next one can tell whether
+	// anything has driven it since.
+	//
+	// Turning a node on top of the animation only works while the animation is
+	// writing it every frame. Bones are; an attachment node like WEAPON never
+	// is, and a frozen graph stops writing even bones -- there a per-frame
+	// delta multiplies into itself and the weapon spins. So a node still
+	// holding exactly what we wrote is turned from the remembered input
+	// instead. The same record puts a node back when the correction ends:
+	// bones recover on the next update, WEAPON would stay crooked.
+	struct NodeTurn
+	{
+		RE::NiMatrix3 written;
+		RE::NiMatrix3 input;
+		bool          valid{ false };
+	};
+
 	// IAnimationGraphManagerHolder::NotifyAnimationGraph (slot 1) on the actor
 	// classes. While a participant is locked, only our own events and the
 	// cancel events reach the graph, so nothing else can start.
@@ -211,7 +250,26 @@ private:
 	void ReturnToIdle();
 
 	void PositionActors(RE::Actor* a_player, RE::Actor* a_npc, float a_blend, float a_meterOffset);
+
+	// Weapon geometry: both blades measured off their meshes, the point where
+	// they are closest, and the separation that makes them meet.
+	struct SolveResult
+	{
+		bool         touching{ false };  // some separation in range brings the blades together
+		float        distance{ 0.0f };   // the separation solved for, touching or closest
+		float        gap{ 0.0f };        // what is left between them there
+		RE::NiPoint3 onPlayer;           // the closest point on each blade at that separation
+		RE::NiPoint3 onNpc;
+	};
+	void                MeasureBlades(RE::Actor* a_player, RE::Actor* a_npc);
+	[[nodiscard]] float GapAt(float a_distance, RE::NiPoint3* a_onPlayer = nullptr, RE::NiPoint3* a_onNpc = nullptr) const;
+	bool                SolveClashDistance(bool a_log, SolveResult& a_result);
+	// The separation PositionActors holds the pair at: the solved one when
+	// there is one, else fClashDistance.
+	[[nodiscard]] float StandoffDistance() const;
+
 	void FaceEachOther(RE::Actor* a_player, RE::Actor* a_npc);
+	void CancelAttack(RE::Actor* a_actor);
 	void CancelAndBlock(RE::Actor* a_actor);
 	void SendBlock(RE::Actor* a_actor);
 	void SendBlockStop(RE::Actor* a_actor);
@@ -268,12 +326,81 @@ private:
 		bool  established{ false };
 		bool  everEstablished{ false };  // seen blocking at least once this clash
 		float resendTimer{ 0.0f };
+		float cancelTimer{ 0.0f };       // since the last cancel; paced to MCO's blend out of an attack
+		float attackTime{ 0.0f };        // how long the attack state has refused to clear
+		bool  gaveUpOnAttack{ false };   // stopped waiting for it, and said so once
 	};
 	BlockHold _playerBlock;
 	BlockHold _npcBlock;
 	void      HoldBlock(RE::Actor* a_actor, BlockHold& a_hold, float a_dt);
 
 	float _meterOffset{ 0.0f };  // current slide along the axis, from the meter
+
+	// Both blades are re-measured every frame so the contact point follows
+	// the pose; the separation solve on top of them is re-run only until the
+	// pose settles, because a target that keeps moving is a warp every frame
+	// and the movement system reads that as walking.
+	struct Blades
+	{
+		BladeGeometry::Blade player;
+		BladeGeometry::Blade npc;
+		RE::NiPoint3         playerOrigin;  // actor positions when measured
+		RE::NiPoint3         npcOrigin;
+		bool                 valid{ false };
+	};
+	Blades       _blades;
+	RE::NiPoint3 _contactPoint;             // where the two blades are closest
+	bool         _contactValid{ false };
+	float        _bladeGap{ 0.0f };         // distance between them there
+	float        _solvedDistance{ 0.0f };   // 0 = no solve; fClashDistance stands
+	bool         _solveLocked{ false };     // stop re-solving: the pose has settled
+	bool         _solveReported{ false };   // the one log line per clash is out
+
+	// Height correction. A gap the separation solve cannot close is vertical,
+	// and no standing position reaches it -- the character controller owns
+	// their height. So the higher blade's owner is bent down to the other,
+	// half out of the spine and half out of the sword arm's shoulder, and the
+	// separation is solved once more against the pose that results.
+	struct Tilt
+	{
+		RE::FormID   actor{ 0 };  // whose skeleton is bent; 0 = nobody
+		RE::NiPoint3 axis;        // world rotation axis: horizontal, across the clash
+		const char*  spineNode{ nullptr };
+		float        spineAngle{ 0.0f };
+		NodeTurn     spineTurn;
+		const char*  armNode{ nullptr };
+		float        armAngle{ 0.0f };
+		NodeTurn     armTurn;
+	};
+	Tilt _tilt;
+	// Written on the game thread, read by UpdateAnimation, which the engine
+	// may run off a worker; the flag publishes it and retires it.
+	std::atomic<bool> _tiltValid{ false };
+	std::atomic<bool> _tiltApplied{ false };   // the hook has written it at least once
+	bool              _tiltResolved{ false };  // the separation has been re-solved on top of it
+	void              PlanTilt(const SolveResult& a_result, RE::Actor* a_player, RE::Actor* a_npc);
+	void              ClearTilt();
+	void              ApplyTilt(RE::Actor* a_actor, RE::NiAVObject* a_root);
+
+	// Clipping: a blade swung into the other fighter is turned back out, at
+	// the wrist and then at the weapon node for the overflow. A running angle
+	// rather than a plan -- the animation keeps moving, so it is measured
+	// again each frame off a blade that already carries the correction.
+	struct Clearance
+	{
+		RE::FormID   actor{ 0 };
+		RE::NiPoint3 axis;
+		float        angle{ 0.0f };
+		bool         leftHand{ false };  // which hand the blade is in
+		NodeTurn     handTurn;
+		NodeTurn     weaponTurn;         // the one that is not animated, and so must be put back
+	};
+	Clearance         _clearance[2];  // player, then opponent
+	std::atomic<bool> _clearanceValid{ false };
+	float             _clearanceDepth[2]{ 0.0f, 0.0f };  // last measured, for the log
+	void              UpdateClearance(RE::Actor* a_player, RE::Actor* a_npc, float a_dt);
+	void              ClearClearance();
+	void              ApplyClearance(RE::Actor* a_actor, RE::NiAVObject* a_root);
 
 	// Settle: headings are re-aimed every frame until this much time has
 	// passed since the clash began; then they freeze and spine tracking is off.
@@ -352,7 +479,6 @@ private:
 	// graph event filtering
 	RE::IAnimationGraphManagerHolder* _playerHolder{ nullptr };
 	RE::IAnimationGraphManagerHolder* _npcHolder{ nullptr };
-	bool                              _sendingOwnEvent{ false };
 	float                             _diagTimer{ 0.0f };
 
 	// Sends one of our own events past the filter.

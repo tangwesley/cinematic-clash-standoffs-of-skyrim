@@ -111,6 +111,20 @@ ones that would enter those states (`blockAnticipateStart`, `blockHitStart`,
 so the hold is never interrupted; hits never land during a clash anyway. Outside a clash
 nothing is filtered. Block Overhaul's own `blockStartOut` and housekeeping events pass.
 
+**MCO / BFCO, and cancelling the opponent's swing.** MCO runs each attack as a state of its
+own, and the transition that leaves one on `blockStart` is conditioned on
+`(IsNPC == 0) && (MCO_bEnableBlockCancel == 1)` — the player only. An opponent's route out is
+`MCO_EndAnimation`, an unconditional wildcard to idle, which is why the cancel sends that
+first and why asking a second time for the block alone is useless to an NPC: if anything puts
+them back into a swing after the cancel, `blockStart` cannot take them out of it again. So
+the per-frame hold re-sends the whole cancel rather than just `blockStart`, for as long as
+the actor's attack state refuses to clear, and gives up on that condition after half a second
+and holds the block on its own. `IdleForceDefaultState` would end any attack outright and is
+gated by nothing, but the default state is the *unarmed* one: the graph leaves it believing
+the hands are empty while the weapon is still equipped and still drawn on the model, so the
+actor stands wrong, cannot attack and walks unarmed until something resets the graph. It is
+not used for that reason. `bDebugLog` prints each actor's `attackState` twice a second.
+
 ## Open Animation Replacer conditions
 
 Registered when OAR is present:
@@ -161,6 +175,56 @@ shows up in the menu within a second. The ones you are most likely to tune:
 - `[Rumble]` drives the pad's motors while the weapons are locked (a held level plus a kick
   per press), honouring the game's own rumble setting. XInput pads only, which includes
   anything Steam Input presents as one.
+- `[Standoff] bSolveClashDistance` (on by default) decides how far apart the pair stands.
+  Both weapons are measured off their own meshes once the block pose is up — the segment
+  from the hand to the far end of the blade, taken from the bounding spheres of the shapes
+  hanging off the `WEAPON` node (`SHIELD` for a left-hand weapon or a shield that was left
+  visible) — and the pair is stood at the widest separation, between `fSolveDistanceMin`
+  and `fSolveDistanceMax`, at which the two blades still cross, less `fSolveBite`. That
+  replaces `fClashDistance`, which otherwise leaves a gap or an overlap depending on which
+  block animation each fighter is playing and how long their weapons are. The solve runs
+  until the pose settles (`fSettleTime`) and is then held, because a target that keeps
+  moving is a warp every frame and the movement system reads that as walking. Only the gap
+  *along* the pair's own axis can be closed this way: a miss that is sideways or vertical
+  (a height or scale difference, or two block poses that hold the guard at different
+  heights) is out of reach, since the character controller owns each actor's height. When
+  that happens `fClashDistance` is kept — unless `bTiltToMeet` picks it up — and the log
+  says so, with the miss split into its along-axis, sideways and vertical parts. Set
+  `bSolveClashDistance = 0` for the old fixed distance.
+- `[Standoff] bTiltToMeet` (on by default) handles the vertical miss the separation solve
+  cannot. The pair is stood at the closest the two blades come, and the fighter whose blade
+  sits higher is bent down to the other one: half the drop out of the spine
+  (`NPC Spine1 [Spn1]`) and half out of the sword arm's shoulder (`NPC R UpperArm [RUar]`,
+  or the left one for a left-hand weapon), each joint clamped to `fTiltMaxDegrees` (12).
+  Both rotations are re-applied after every animation update — the pose is written by the
+  graph each frame, so a correction has to be too — and are dropped the instant the
+  standoff resolves, which also means nothing has to be restored: the next update is the
+  animation's own again. The separation is solved once more over the bent pose. A blade is
+  a long lever, so a few degrees at the shoulder move the tip a long way: 12° at each joint
+  covers a scaled-up boss, and an ordinary race-height difference needs two or three.
+  Sideways misses are not addressed — those want a twist, not a pitch.
+- `[Standoff] bClearWeaponClipping` (on by default) turns a blade back out of the other
+  fighter when a block animation has swung it into them. The opponent is treated as one
+  capsule from hips to head, `fClearanceBodyRadius` (16) wide and scaled by their size; a
+  blade inside it is turned about its grip along the shortest way out, `fClearanceMaxDegrees`
+  (20) at the wrist (`NPC R Hand [RHand]`, or the left one) and whatever is left over at the
+  `WEAPON` node itself. The wrist goes first because the hand turns with it; a turn at the
+  weapon node is the handle moving inside a fist that stays put, which shows past 15° or so.
+  Unlike the tilt this is not solved once and held: it is measured every frame off a blade
+  that already carries the previous frame's correction, wound on while the blade is inside
+  them, and eased back to nothing once it is clear, so it tracks a live animation rather than
+  a guess. Turning a blade out of a chest can lift it off the blade it is locked against —
+  `bDebugLog` prints both the penetration depth and the resulting gap twice a second.
+  The `WEAPON` node is the one joint here that no animation drives, so a turn applied to it
+  is remembered and re-applied to what was there before rather than to its own output (a
+  per-frame delta on a node nothing rewrites compounds into a spin), and it is put back
+  explicitly when the correction ends. The same rule covers every node the plugin writes, so
+  a frozen graph (`bFreezeAfterSettle`) or an animation update that runs twice in a frame
+  cannot make a correction accumulate either.
+- `[Standoff] bContactFromWeapons` (on by default) puts the sparks, the scrape loop and the
+  camera's aim at the point where the two measured blades are actually closest, instead of
+  the midpoint between the actors at `[Sparks] fHeight` / `[Camera] fAimHeight`. Those two
+  heights are the fallback for when a weapon's mesh cannot be read.
 - `[Standoff] fTimeMultiplier` adds slow motion (1.0 = off).
 - `[Standoff] fSettleTime` is how long the actors keep being re-aimed at each other after
   contact; after it their headings freeze and head/spine tracking is off until the clash
@@ -234,7 +298,8 @@ CommonLib once and later builds are incremental.
 | Path | Purpose |
 | --- | --- |
 | `src/ClashDetection.*` | Melee-hit hook and Precision callback; runs the vendored parry check. |
-| `src/ClashController.*` | State machine: approach, standoff (QTE), resolve, aftermath. Actor positioning, animation events, control and AI locks. |
+| `src/ClashController.*` | State machine: approach, standoff (QTE), resolve, aftermath. Actor positioning, animation events, control and AI locks, and the post-animation spine/shoulder bend. |
+| `src/BladeGeometry.*` | Where an actor's weapon actually is: the blade as a segment from the hand to the tip, measured off the loaded 3D, the torso as a capsule, and the closest-point solves between them. |
 | `src/ClashCamera.*` | `ThirdPersonState::Update` hook, shoulder camera, SmoothCam API handshake. |
 | `src/ClashInput.*` | Reads attack presses (and the held state, for hold-to-mash) from the raw input stream during the standoff; filters every other button out of `MenuControls` and `PlayerControls` while the player is locked. |
 | `src/ClashRumble.*` | Controller rumble through XInput: a held level for the standoff, pulses per press, cut while a menu pauses the game. |
